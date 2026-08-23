@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# The LAW 32 gate, in one place, for every repository that does not ship its own.
+#
+# Until 2026-08-23 22:18 the router refused outright when a repository carried no pre-push,
+# on the reasoning that pre-push is the gate LAW 32 hangs off. Measured 40 minutes later:
+# four of the six repositories on this machine could not push at all, ~/.estate itself among
+# them -- the repository that holds the router. That is the shape the router's own comments
+# already name twice: a fence that cannot be satisfied is an outage, not a fence.
+#
+# So absence no longer refuses. It runs this instead. The law is still enforced everywhere,
+# and it is enforced by something a repository inherits rather than something each repository
+# has to remember to install.
+#
+# What it refuses: a push carrying a `feat:` commit that adds no docs/demo/<name>.md and
+# docs/onboarding/<name>.md, or whose pair is a heading with nothing under it. The floor is
+# 200 characters of prose per file once headings and blank lines are stripped, because a gate
+# an empty template satisfies teaches people to write empty templates.
+#
+# One-off escape: ALLOW_BRANCH_RECREATE=1 git push ...
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+
+# git hands the refs being pushed on stdin. Read it so the caller does not block, even though
+# the range below is computed from origin/main rather than from the refs.
+cat >/dev/null || true
+
+base="$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+if ! git rev-parse --verify --quiet "$base" >/dev/null; then
+  exit 0
+fi
+
+feats="$(git log --format='%s' "$base"..HEAD 2>/dev/null | grep -E '^feat(\(|:)' || true)"
+[ -n "$feats" ] || exit 0
+
+missing=""
+while IFS= read -r subject; do
+  [ -n "$subject" ] || continue
+  # feat(name): thing  ->  name
+  # feat: thing        ->  first word of the description, lowercased
+  scope="$(printf '%s' "$subject" | sed -n 's/^feat(\([^)]*\)).*/\1/p')"
+  if [ -z "$scope" ]; then
+    scope="$(printf '%s' "$subject" | sed 's/^feat: *//' | awk '{print tolower($1)}')"
+  fi
+  for kind in demo onboarding; do
+    f="docs/$kind/$scope.md"
+    if [ ! -f "$f" ]; then
+      missing="$missing\n  $f is missing (from: $subject)"
+      continue
+    fi
+    prose="$(grep -v '^#' "$f" | grep -v '^[[:space:]]*$' | tr -d '\n' | wc -c | tr -d ' ')"
+    if [ "$prose" -lt 200 ]; then
+      missing="$missing\n  $f has $prose characters of prose, the floor is 200"
+    fi
+  done
+done <<< "$feats"
+
+[ -n "$missing" ] || exit 0
+
+echo "pre-push blocked by LAW 32: a feature ships with a demo and an onboarding."
+printf "%b\n" "$missing"
+echo ""
+echo "  docs/demo/<name>.md        what he sees when it runs, real output, command above it"
+echo "  docs/onboarding/<name>.md  what it is for, what it costs, where it lives, how to stop it"
+echo ""
+echo "Or, for a one-off:  ALLOW_BRANCH_RECREATE=1 git push ..."
+[ "${ALLOW_BRANCH_RECREATE:-}" = "1" ] || exit 1
+exit 0

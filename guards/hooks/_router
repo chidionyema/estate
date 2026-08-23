@@ -27,9 +27,15 @@ if [ "$name" = "pre-push" ]; then
       exec "$top/$d/pre-push" "$@"
     fi
   done
-  echo "pre-push: no $name in $top/.githooks, $top/scripts/hooks or $top/hooks."
-  echo "pre-push: install it per repo (git config core.hooksPath scripts/hooks)"
-  echo "pre-push: or set ALLOW_BRANCH_RECREATE=1 for a one-off."
-  [ "${ALLOW_BRANCH_RECREATE:-}" = "1" ] || exit 1
+  # No repository hook. Run the shared LAW 32 gate rather than refusing.
+  #
+  # Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
+  # repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
+  # the repository that holds this router. An install instruction printed to a machine that
+  # cannot push the installation is an outage wearing a fence's clothes, and the comments above
+  # already say twice why that is the wrong trade. The law is still enforced; it is now
+  # enforced by something every repository inherits instead of something each one must
+  # remember to install.
+  exec "$(dirname "$0")/law32-default" "$@"
 fi
 exit 0
