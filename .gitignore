@@ -10,3 +10,4 @@
 !guards/**
 !docs/
 !docs/**
+state/inventory.json
