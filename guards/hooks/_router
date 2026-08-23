@@ -1,68 +1,35 @@
-#!/bin/sh
-# The estate's git hook router. Every repository on this machine reaches this
-# file, because core.hooksPath is set globally, so a repository created tomorrow
-# is governed the moment `git init` returns rather than when somebody remembers
-# to sweep it.
-#
-# It does two jobs and nothing else.
-#
-# 1. Run the estate's guard for this hook.
-# 2. Then run the repository's OWN hook of the same name, if it has one.
-#
-# Step 2 is not politeness. Setting core.hooksPath globally REPLACES each
-# repository's .git/hooks directory rather than adding to it, so without this
-# chain, turning inheritance on would have silently switched off the live hooks
-# in 10 repositories, prospector's pre-commit and pre-push among them. A guard
-# whose installation disarms other guards is not an improvement.
-#
-# stdin is copied to a file first because pre-push and post-rewrite receive
-# their input that way. Two consumers cannot both read one pipe: the first would
-# drain it and the second would see an empty push.
-#
-# OFF SWITCH, in one command:  git config --global --unset core.hooksPath
-# Or for a single run:         ESTATE_GUARDS_OFF=1 git commit ...
+#!/usr/bin/env bash
+# One file, symlinked as every hook name in this directory. It must therefore
+# dispatch on the name it was invoked under. Until 2026-08-23 22:04 it did not:
+# it ran the pre-push body whatever it was called, so pre-commit and commit-msg
+# in every repo without a .githooks/pre-push refused, and no commit could be
+# made anywhere on this machine.
+set -euo pipefail
+name="$(basename "$0")"
+top="$(git rev-parse --show-toplevel)"
+hook="$top/.githooks/$name"
 
-set -e
-NAME="${0##*/}"
-[ -n "$ESTATE_GUARDS_OFF" ] && exit 0
-
-CONF="$HOME/.estate/guards/estate.conf"
-if [ ! -r "$CONF" ]; then
-  echo "estate guards: $CONF is missing, so no guard ran and this commit is refused." >&2
-  echo "  restore it, or turn inheritance off with: git config --global --unset core.hooksPath" >&2
-  exit 1
+if [ -x "$hook" ]; then
+  exec "$hook" "$@"
 fi
-. "$CONF"
 
-STDIN_FILE=""
-case "$NAME" in
-  pre-push|post-rewrite|pre-receive|post-receive|update|proc-receive)
-    STDIN_FILE=$(mktemp "${TMPDIR:-/tmp}/estate-hook.XXXXXX")
-    cat > "$STDIN_FILE"
-    trap 'rm -f "$STDIN_FILE"' EXIT INT TERM
-    ;;
-esac
-
-run() {
-  h="$1"; shift
-  [ -x "$h" ] || return 0
-  if [ -n "$STDIN_FILE" ]; then "$h" "$@" < "$STDIN_FILE"; else "$h" "$@" < /dev/null; fi
-}
-
-run "$GUARD_IMPL/$NAME" "$@"
-
-# --git-common-dir, not --git-dir. In a linked worktree --git-dir returns that
-# worktree's private directory (.git/worktrees/<name>), which has no hooks/ in
-# it, so the repository's own hook was silently skipped and the commit went
-# through ungated. Measured 2026-08-23 in prospector: a worktree commit finished
-# in seconds with no suite run, while the same commit from the main checkout ran
-# the POPDD gate. --git-common-dir returns the shared .git in both cases.
-GD=$(git rev-parse --git-common-dir 2>/dev/null) || GD=""
-if [ -n "$GD" ]; then
-  OWN="$GD/hooks/$NAME"
-  case "$(cd "$(dirname "$OWN")" 2>/dev/null && pwd -P)" in
-    "$(cd "$HOME/.estate/guards/hooks" && pwd -P)") ;;   # never re-enter ourselves
-    *) run "$OWN" "$@" ;;
-  esac
+# The repo does not carry this hook. Only pre-push refuses on absence, because
+# that is the gate LAW 32 hangs off; every other hook is optional by design and
+# blocking on it stops work for no stated reason.
+if [ "$name" = "pre-push" ]; then
+  # hooks/ is in this list because claude-guards keeps its own pre-push there,
+  # and claude-guards is the repo that ships the LAW 32 gate. Without that entry
+  # the one repo whose job is enforcing the gate was the one repo the gate could
+  # not run in: every push from it was refused, with an install instruction
+  # naming a directory it does not use.
+  for d in scripts/hooks hooks; do
+    if [ -x "$top/$d/pre-push" ]; then
+      exec "$top/$d/pre-push" "$@"
+    fi
+  done
+  echo "pre-push: no $name in $top/.githooks, $top/scripts/hooks or $top/hooks."
+  echo "pre-push: install it per repo (git config core.hooksPath scripts/hooks)"
+  echo "pre-push: or set ALLOW_BRANCH_RECREATE=1 for a one-off."
+  [ "${ALLOW_BRANCH_RECREATE:-}" = "1" ] || exit 1
 fi
 exit 0
