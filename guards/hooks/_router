@@ -1,0 +1,62 @@
+#!/bin/sh
+# The estate's git hook router. Every repository on this machine reaches this
+# file, because core.hooksPath is set globally, so a repository created tomorrow
+# is governed the moment `git init` returns rather than when somebody remembers
+# to sweep it.
+#
+# It does two jobs and nothing else.
+#
+# 1. Run the estate's guard for this hook.
+# 2. Then run the repository's OWN hook of the same name, if it has one.
+#
+# Step 2 is not politeness. Setting core.hooksPath globally REPLACES each
+# repository's .git/hooks directory rather than adding to it, so without this
+# chain, turning inheritance on would have silently switched off the live hooks
+# in 10 repositories, prospector's pre-commit and pre-push among them. A guard
+# whose installation disarms other guards is not an improvement.
+#
+# stdin is copied to a file first because pre-push and post-rewrite receive
+# their input that way. Two consumers cannot both read one pipe: the first would
+# drain it and the second would see an empty push.
+#
+# OFF SWITCH, in one command:  git config --global --unset core.hooksPath
+# Or for a single run:         ESTATE_GUARDS_OFF=1 git commit ...
+
+set -e
+NAME="${0##*/}"
+[ -n "$ESTATE_GUARDS_OFF" ] && exit 0
+
+CONF="$HOME/.estate/guards/estate.conf"
+if [ ! -r "$CONF" ]; then
+  echo "estate guards: $CONF is missing, so no guard ran and this commit is refused." >&2
+  echo "  restore it, or turn inheritance off with: git config --global --unset core.hooksPath" >&2
+  exit 1
+fi
+. "$CONF"
+
+STDIN_FILE=""
+case "$NAME" in
+  pre-push|post-rewrite|pre-receive|post-receive|update|proc-receive)
+    STDIN_FILE=$(mktemp "${TMPDIR:-/tmp}/estate-hook.XXXXXX")
+    cat > "$STDIN_FILE"
+    trap 'rm -f "$STDIN_FILE"' EXIT INT TERM
+    ;;
+esac
+
+run() {
+  h="$1"; shift
+  [ -x "$h" ] || return 0
+  if [ -n "$STDIN_FILE" ]; then "$h" "$@" < "$STDIN_FILE"; else "$h" "$@" < /dev/null; fi
+}
+
+run "$GUARD_IMPL/$NAME" "$@"
+
+GD=$(git rev-parse --git-dir 2>/dev/null) || GD=""
+if [ -n "$GD" ]; then
+  OWN="$GD/hooks/$NAME"
+  case "$(cd "$(dirname "$OWN")" 2>/dev/null && pwd -P)" in
+    "$(cd "$HOME/.estate/guards/hooks" && pwd -P)") ;;   # never re-enter ourselves
+    *) run "$OWN" "$@" ;;
+  esac
+fi
+exit 0

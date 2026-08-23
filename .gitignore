@@ -1,0 +1,12 @@
+# Deny everything, then admit only what belongs in version control.
+#
+# knowledge/ is the estate's memory: checkpoints, ledgers, session records and
+# the founder's own words. It stays on this disk and goes to the estate's own
+# offsite bucket. It does not go to a code-hosting vendor. Founder, 2026-08-23:
+# "this shold not be ingithub".
+*
+!.gitignore
+!guards/
+!guards/**
+!docs/
+!docs/**
