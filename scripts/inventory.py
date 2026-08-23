@@ -206,28 +206,64 @@ def discover_guards() -> list:
     return rows
 
 
+#: Directories holding one append-only file per project rather than one file overall. Their
+#: contents are counted as a single ledger, because that is what they are.
+LEDGER_DIRS = ["directives", os.path.join("state", "prompt-ledger"), os.path.join("state", "tickets")]
+
+#: Transcripts are excluded by path, not by name. 75,137 files live under projects/ and walking
+#: them once cost a 2-minute timeout, which is the same unbounded-walk failure that killed the
+#: aiden tick 22 times in a day.
+LEDGER_SKIP = re.compile(r"/(projects|node_modules|\.git|__pycache__)/")
+
+
 def discover_ledgers() -> list:
-    """Every place work is recorded. The whole silo problem is visible in this one list."""
-    out = []
+    """Every place work is recorded, DISCOVERED rather than listed.
+
+    The first version of this function named five ledgers by hand and reported five. Discovering
+    them found 69. A hand-written list is the exact failure this whole file exists to prevent, and
+    writing one here understated the silo count fourteen-fold in the estate's headline finding.
+    """
+    out, seen = [], set()
 
     def add(id_, path, count, note=""):
+        if path in seen:
+            return
+        seen.add(path)
         out.append({"kind": "ledger", "id": id_, "path": path, "root": root_of(path),
                     "rows": count, "note": note, "coupling": coupling_of(path)})
 
-    t = os.path.join(HOME, ".claude", "state", "tickets")
-    if os.path.isdir(t):
-        add("local-tickets", t, len([f for f in os.listdir(t) if f.endswith(".json")]),
-            "written by the ticket gate")
-    dv = os.path.join(HOME, ".claude", "directives")
-    if os.path.isdir(dv):
-        add("prompt-ledger", dv, len(os.listdir(dv)), "one folder per project")
-    b = os.path.join(HOME, ".claude", "ESTATE_BOARD.jsonl")
-    if os.path.exists(b):
-        add("peer-board", b, sum(1 for _ in open(b, errors="ignore")), "the peer channel")
-    dj = os.path.join(HOME, ".claude", "state", "drills.jsonl")
-    if os.path.exists(dj):
-        add("drill-results", dj, sum(1 for _ in open(dj, errors="ignore")), "verdicts")
-    raw = sh(["/usr/local/bin/gh", "issue", "list", "--repo", "chidionyema/crew",
+    def rows_in(p):
+        try:
+            with open(p, "rb") as fh:
+                return sum(1 for _ in fh)
+        except Exception:
+            return -1
+
+    # One-file-per-project directories, counted as one ledger each.
+    for base in (os.path.join(HOME, ".claude"), ESTATE):
+        for rel in LEDGER_DIRS:
+            d = os.path.join(base, rel)
+            if not os.path.isdir(d):
+                continue
+            files = [f for f in os.listdir(d) if f.endswith((".jsonl", ".json"))]
+            add(rel.replace(os.sep, "/"), d, sum(rows_in(os.path.join(d, f)) for f in files),
+                "%d files, one per project" % len(files))
+
+    # Every other append-only file, found by walking with a hard depth bound.
+    for base in (os.path.join(HOME, ".claude"), ESTATE):
+        for dirpath, dirnames, filenames in os.walk(base):
+            if LEDGER_SKIP.search(dirpath + "/"):
+                dirnames[:] = []
+                continue
+            if dirpath[len(base):].count(os.sep) >= 3:
+                dirnames[:] = []
+            for fn in filenames:
+                if not fn.endswith(".jsonl"):
+                    continue
+                p = os.path.join(dirpath, fn)
+                add(os.path.relpath(p, HOME), p, rows_in(p))
+
+    raw = sh(["gh", "issue", "list", "--repo", "chidionyema/crew",
               "--state", "open", "--limit", "200", "--json", "number"], timeout=30)
     try:
         add("crew-issues", "github:chidionyema/crew", len(json.loads(raw)), "the board of record")
