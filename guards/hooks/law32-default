@@ -29,29 +29,57 @@ if ! git rev-parse --verify --quiet "$base" >/dev/null; then
   exit 0
 fi
 
-feats="$(git log --format='%s' "$base"..HEAD 2>/dev/null | grep -E '^feat(\(|:)' || true)"
+feats="$(git log --format='%H %s' "$base"..HEAD 2>/dev/null | grep -E '^[0-9a-f]+ feat(\(|:)' || true)"
 [ -n "$feats" ] || exit 0
 
+# Does this pair exist and say something? Echoes the complaint, or nothing when it is fine.
+pair_problem() {
+  _n="$1"; _p=""
+  for _k in demo onboarding; do
+    _f="docs/$_k/$_n.md"
+    if [ ! -f "$_f" ]; then
+      _p="$_p\n  $_f is missing"
+      continue
+    fi
+    _c="$(grep -v '^#' "$_f" | grep -v '^[[:space:]]*$' | tr -d '\n' | wc -c | tr -d ' ')"
+    [ "$_c" -lt 200 ] && _p="$_p\n  $_f has $_c characters of prose, the floor is 200"
+  done
+  printf '%b' "$_p"
+}
+
 missing=""
-while IFS= read -r subject; do
-  [ -n "$subject" ] || continue
+while IFS= read -r line; do
+  [ -n "$line" ] || continue
+  sha="${line%% *}"
+  subject="${line#* }"
+  # Pairs added by THIS commit, not by the push. Scoping the fallback to the push let one
+  # well-documented feature excuse every other feat: commit beside it -- measured 2026-08-23,
+  # when two controls that must fail both passed. A feature's docs are the ones it brought.
+  added="$(git show --name-only --format= "$sha" 2>/dev/null | sed -n 's#^docs/demo/\(.*\)\.md$#\1#p')"
   # feat(name): thing  ->  name
   # feat: thing        ->  first word of the description, lowercased
   scope="$(printf '%s' "$subject" | sed -n 's/^feat(\([^)]*\)).*/\1/p')"
   if [ -z "$scope" ]; then
     scope="$(printf '%s' "$subject" | sed 's/^feat: *//' | awk '{print tolower($1)}')"
   fi
-  for kind in demo onboarding; do
-    f="docs/$kind/$scope.md"
-    if [ ! -f "$f" ]; then
-      missing="$missing\n  $f is missing (from: $subject)"
-      continue
-    fi
-    prose="$(grep -v '^#' "$f" | grep -v '^[[:space:]]*$' | tr -d '\n' | wc -c | tr -d ' ')"
-    if [ "$prose" -lt 200 ]; then
-      missing="$missing\n  $f has $prose characters of prose, the floor is 200"
-    fi
-  done
+  problem="$(pair_problem "$scope")"
+  # The guess is only a guess. "feat: a pull request declares ..." derived the name "a" and
+  # refused a push that carried both files under their real name, measured 2026-08-23. So when
+  # the guessed pair is not there, accept any complete pair the push actually adds. A pair still
+  # has to exist and still has to clear the 200-character floor; what is dropped is the demand
+  # that its filename match a word this gate picked out of a sentence.
+  if [ -n "$problem" ] && [ -n "$added" ]; then
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      if [ -z "$(pair_problem "$cand")" ]; then
+        problem=""
+        break
+      fi
+    done <<< "$added"
+  fi
+  if [ -n "$problem" ]; then
+    missing="$missing\n  (from: $subject)$problem"
+  fi
 done <<< "$feats"
 
 [ -n "$missing" ] || exit 0
