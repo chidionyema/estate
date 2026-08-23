@@ -51,7 +51,13 @@ run() {
 
 run "$GUARD_IMPL/$NAME" "$@"
 
-GD=$(git rev-parse --git-dir 2>/dev/null) || GD=""
+# --git-common-dir, not --git-dir. In a linked worktree --git-dir returns that
+# worktree's private directory (.git/worktrees/<name>), which has no hooks/ in
+# it, so the repository's own hook was silently skipped and the commit went
+# through ungated. Measured 2026-08-23 in prospector: a worktree commit finished
+# in seconds with no suite run, while the same commit from the main checkout ran
+# the POPDD gate. --git-common-dir returns the shared .git in both cases.
+GD=$(git rev-parse --git-common-dir 2>/dev/null) || GD=""
 if [ -n "$GD" ]; then
   OWN="$GD/hooks/$NAME"
   case "$(cd "$(dirname "$OWN")" 2>/dev/null && pwd -P)" in
