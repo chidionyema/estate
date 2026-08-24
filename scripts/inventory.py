@@ -569,7 +569,20 @@ def discover_drills() -> list:
 def findings(rows: list) -> dict:
     """Duplicates, orphans and silos. The gap is the information, not the count."""
     f = {"duplicates": [], "orphans": [], "unreadable": [], "silos": [], "unheld": [],
-         "uncollected": [], "unreferenced": []}
+         "uncollected": [], "unreferenced": [], "port_collisions": []}
+
+    # One port, two claimants: a container that publishes it and a process
+    # that is not its forward, or two containers publishing the same port.
+    claims = defaultdict(set)
+    for r in rows:
+        if r["kind"] == "container" and r.get("published_ports") not in (None, "(none)"):
+            for p in r["published_ports"].split(","):
+                claims[int(p)].add(r["id"])
+        elif r["kind"] == "listener" and r.get("process") != "ssh":
+            claims[r["port"]].add(r["process"])
+    for port, who in sorted(claims.items()):
+        if len(who) > 1:
+            f["port_collisions"].append({"port": port, "claimants": sorted(who)})
 
     # Same basename, different roots -- the classic "built it twice" shape.
     by_name = defaultdict(list)
@@ -634,11 +647,73 @@ def findings(rows: list) -> dict:
     return f
 
 
+def discover_listeners() -> list:
+    """Every TCP port something on this machine is listening on. The estate
+    published ports in compose comments, an architecture table and four catalog
+    annotations, and nothing checked them against the process table: 3200 was
+    taken by an ssh forward when the scheduler UI asked for it (2026-08-24).
+
+    Stable fields only: port, bind address, process name, command path. The pid
+    moves between scans and is dropped. A colima port-forward shows as ssh; the
+    container that published the port owns it (resolved in annotate_listeners).
+    """
+    out = sh(["/usr/sbin/lsof", "-nP", "-iTCP", "-sTCP:LISTEN", "-F", "pcn"])
+    rows, proc, cmd, seen = [], "", "", set()
+    for line in out.splitlines():
+        tag, val = line[:1], line[1:]
+        if tag == "p":
+            proc, cmd = val, ""
+        elif tag == "c":
+            cmd = val
+        elif tag == "n":
+            addr, _, port = val.rpartition(":")
+            if not port.isdigit() or (port, addr) in seen:
+                continue
+            seen.add((port, addr))
+            full = sh(["/bin/ps", "-o", "command=", "-p", proc]).strip()
+            path = full.split(" ")[0] if full else ""
+            rows.append({
+                "kind": "listener",
+                "id": f"port-{port}",
+                "port": int(port),
+                "bind": addr,
+                "process": cmd,
+                "command": full[:200],
+                "path": path,
+                "root": root_of(path) if path.startswith("/") else "(outside)",
+                "coupling": coupling_of(cmd + " " + full),
+            })
+    return sorted(rows, key=lambda r: (r["port"], r["bind"]))
+
+
+def annotate_listeners(rows: list) -> None:
+    """Map each listener to its owner: the container that published the port,
+    else the process. Two claims on one port is the finding."""
+    owner = {}
+    for r in rows:
+        if r["kind"] == "container" and r.get("published_ports") not in (None, "(none)"):
+            for p in r["published_ports"].split(","):
+                owner.setdefault(int(p), r["id"])
+    for r in rows:
+        if r["kind"] != "listener":
+            continue
+        if r["port"] in owner:
+            r["owner"] = owner[r["port"]]
+        elif r["process"] == "ssh":
+            r["owner"] = "(ssh forward, no container)"
+        else:
+            # "python3 /x/y/aiden.py --port 8765" owns as aiden.py, not Python.
+            toks = [t for t in r["command"].split() if "/" in t or t.endswith((".py", ".js", ".mjs"))]
+            toks = [t for t in toks if not re.search(r"(?i)(python|node)[\d.]*$", t)]
+            r["owner"] = os.path.basename(toks[0]) if toks else r["process"]
+
+
 def collect() -> dict:
     rows = (discover_jobs() + discover_repos() + discover_guards()
             + discover_ledgers() + discover_data() + discover_drills()
-            + discover_containers())
+            + discover_containers() + discover_listeners())
     annotate_reach(rows)
+    annotate_listeners(rows)
     return {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rows": rows, "findings": findings(rows)}
 
