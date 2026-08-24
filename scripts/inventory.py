@@ -181,6 +181,54 @@ def discover_repos() -> list:
     return rows
 
 
+def discover_containers() -> list:
+    """What is actually running. The inventory walked the filesystem and never
+    looked at the process table, so the catalogue described 241 files and none of
+    the services those files start -- measured 2026-08-24: 17 containers up, 0 of
+    them in the portal.
+
+    Only fields that do not move between two scans of an unchanged machine are
+    recorded. Uptime, container id and restart count are deliberately dropped:
+    they would make every downstream artefact differ on every run, which is the
+    idempotency defect the founder named on 2026-08-24.
+    """
+    fmt = ("{{.Names}}\t{{.Image}}\t{{.Ports}}\t{{.Status}}"
+           "\t{{.Label \"com.docker.compose.project\"}}"
+           "\t{{.Label \"com.docker.compose.project.working_dir\"}}"
+           "\t{{.Label \"com.docker.compose.service\"}}")
+    out = sh(["docker", "ps", "--format", fmt])
+    rows = []
+    for line in out.splitlines():
+        f = line.split("\t")
+        if len(f) < 7 or not f[0]:
+            continue
+        name, image, ports, status, project, workdir, service = (x.strip() for x in f[:7])
+        # "Up 2 hours (healthy)" -> "healthy". The duration is the moving part.
+        health = "none"
+        m = re.search(r"\((healthy|unhealthy|health: starting)\)", status)
+        if m:
+            health = m.group(1)
+        published = sorted({m.group(1) for m in
+                            re.finditer(r"(?:^|,\s*)[\d.:\[\]]*?:(\d+)->", ports)})
+        rows.append({
+            "kind": "container",
+            "id": name,
+            "path": workdir or "",
+            "root": root_of(workdir) if workdir else "(outside)",
+            "image": image,
+            "project": project or "(none)",
+            "service": service or name,
+            "health": health,
+            "running": True,
+            "published_ports": ",".join(published) or "(none)",
+            # A floating tag is a supply-chain finding: two pulls a week apart
+            # run different software. Measured by tag shape, not by a guess.
+            "pinned": bool(re.search(r":(v?\d+[\w.\-]*)$", image)) and not image.endswith(":latest"),
+            "coupling": coupling_of(image + " " + name),
+        })
+    return sorted(rows, key=lambda r: r["id"])
+
+
 def discover_guards() -> list:
     """Things that refuse. A guard is a file that can exit non-zero to stop an action."""
     rows = []
@@ -588,7 +636,8 @@ def findings(rows: list) -> dict:
 
 def collect() -> dict:
     rows = (discover_jobs() + discover_repos() + discover_guards()
-            + discover_ledgers() + discover_data() + discover_drills())
+            + discover_ledgers() + discover_data() + discover_drills()
+            + discover_containers())
     annotate_reach(rows)
     return {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rows": rows, "findings": findings(rows)}
