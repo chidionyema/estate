@@ -272,6 +272,166 @@ def discover_ledgers() -> list:
     return out
 
 
+#: Bulk data stores. These are trees, not append-only files, so `discover_ledgers` skips them
+#: by path (see LEDGER_SKIP) and until 2026-08-24 the estate's three largest data assets did
+#: not appear in its own inventory at all: 6.4 GB of transcripts, 1.2 GB of telemetry and every
+#: sqlite database on the machine. An inventory that omits the biggest thing it owns reads as a
+#: complete list, which is the exact failure LAW 39 is about.
+#:
+#: Sized with `du`, never by walking in Python. Counting the 76,392 transcript files in this
+#: process cost a 2-minute timeout, and an inventory that cannot finish is an inventory nobody
+#: has.
+DATA_TREES = [
+    ("transcripts", os.path.join(HOME, ".claude", "projects"),
+     "every session verbatim: his words, every tool call, every result"),
+    ("telemetry", os.path.join(HOME, ".claude", "telemetry"),
+     "the CLI's own failed event uploads"),
+    ("toolguard-decisions", os.path.join(HOME, ".claude", "state", "toolguard"),
+     "one file per tool decision"),
+    ("maestro-intents", os.path.join(HOME, ".maestro", "intents"),
+     "what maestro sensed, one file per cycle"),
+    ("prospector-dossiers", os.path.join(HOME, "Documents", "code", "prospector", "store", "dossiers"),
+     "the candidates the vetting gates scored"),
+    # Measured 2026-08-24: the live store above holds 0 files and every dossier the estate has
+    # ever scored -- 2,330 of them, 131 MB -- exists only inside an abandoned agent worktree.
+    # Both are listed so that the empty one is visible as empty rather than simply absent.
+    ("prospector-dossiers-worktree",
+     os.path.join(HOME, "Documents", "code", "prospector", ".claude", "worktrees",
+                  "agent-aaecfffaa54620133", "store", "dossiers"),
+     "the same dossiers, in an abandoned worktree"),
+]
+
+#: Where the warehouse's source list lives. Read, never copied: a second copy of this list is a
+#: thing that drifts, and the drift is silent because both copies keep parsing.
+COLLECT_PY = os.path.join(HOME, "dev", "code", "crew", "science", "collect.py")
+
+#: Code roots searched once to answer "does anything still refer to this store". Bounded to
+#: these three because they hold every script the estate runs.
+CODE_ROOTS = [os.path.join(HOME, ".claude", "scripts"),
+              os.path.join(ESTATE, "scripts"),
+              os.path.join(HOME, "dev", "code", "crew")]
+
+
+def collected_paths() -> set:
+    """Absolute paths the science warehouse ingests, read out of collect.py itself.
+
+    Returns an empty set when collect.py is missing, and the caller reports "unknown" rather
+    than "not collected" -- a missing reader must never be rendered as a clean estate.
+    """
+    try:
+        src = open(COLLECT_PY, errors="ignore").read()
+    except Exception:
+        return set()
+    out = {os.path.join(HOME, m) for m in re.findall(r'HOME / "([^"]+)"', src)}
+    out |= {os.path.join(os.path.dirname(COLLECT_PY), m)
+            for m in re.findall(r'Path\(__file__\)\.parent / "([^"]+)"', src)}
+    return out
+
+
+def code_blob() -> str:
+    """Every script the estate runs, concatenated once, so 'is this store referenced' costs a
+    substring test rather than one grep per asset."""
+    parts = []
+    for base in CODE_ROOTS:
+        if not os.path.isdir(base):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            if re.search(r"/(\.git|node_modules|__pycache__|venv)/", dirpath + "/"):
+                dirnames[:] = []
+                continue
+            if dirpath[len(base):].count(os.sep) >= 4:
+                dirnames[:] = []
+            for fn in filenames:
+                if not fn.endswith((".py", ".sh", ".plist", ".js", ".ts")):
+                    continue
+                p = os.path.join(dirpath, fn)
+                try:
+                    if os.path.getsize(p) > 2_000_000:
+                        continue
+                    parts.append(open(p, errors="ignore").read())
+                except Exception:
+                    continue
+    return "\n".join(parts)
+
+
+def discover_data() -> list:
+    """The bulk stores: trees and databases. Sized with du, bounded by a timeout."""
+    rows = []
+    for id_, path, what in DATA_TREES:
+        if not os.path.isdir(path):
+            continue
+        kb = sh(["du", "-sk", path], timeout=60).split("\t")[0].strip()
+        try:
+            mb = int(kb) / 1024
+        except ValueError:
+            mb = -1
+        rows.append({"kind": "data", "id": id_, "path": path, "root": root_of(path),
+                     "mb": round(mb, 1), "what": what, "coupling": coupling_of(path)})
+
+    # Every database, found with a bounded walk. A .db nobody named is still a thing that holds
+    # state and still a thing that can be lost.
+    seen = set()
+    for base in (os.path.join(HOME, ".claude"), ESTATE, os.path.join(HOME, ".maestro"),
+                 os.path.join(HOME, "dev", "code", "crew")):
+        if not os.path.isdir(base):
+            continue
+        for dirpath, dirnames, filenames in os.walk(base):
+            if re.search(r"/(\.git|node_modules|__pycache__|venv|projects|mypy_cache)/",
+                         dirpath + "/"):
+                dirnames[:] = []
+                continue
+            if dirpath[len(base):].count(os.sep) >= 3:
+                dirnames[:] = []
+            for fn in filenames:
+                if not fn.endswith((".db", ".sqlite", ".sqlite3")):
+                    continue
+                p = os.path.join(dirpath, fn)
+                if p in seen:
+                    continue
+                seen.add(p)
+                try:
+                    mb = os.path.getsize(p) / 1e6
+                except OSError:
+                    mb = -1
+                rows.append({"kind": "data", "id": os.path.relpath(p, HOME), "path": p,
+                             "root": root_of(p), "mb": round(mb, 2), "what": "database",
+                             "coupling": coupling_of(p)})
+    return rows
+
+
+def annotate_reach(rows: list) -> None:
+    """Add two columns to every store: is it collected, and does any code still refer to it.
+
+    These are the two questions the inventory could not answer before, and they are the two that
+    decide whether a store is an asset or a liability. A store nothing collects is data the estate
+    pays to produce and cannot query. A store no code mentions is one nothing writes any more, and
+    the rows in it are the last rows it will ever have.
+
+    The reference test matches on basename, so a generic name like `items.jsonl` can match another
+    file's mention. It over-reports reach and therefore under-reports the finding, which is the
+    safe direction for a number that accuses.
+    """
+    collected = collected_paths()
+    blob = code_blob()
+    for r in rows:
+        if r["kind"] not in ("ledger", "data"):
+            continue
+        p = r.get("path") or ""
+        if p.startswith("github:"):
+            r["collected"], r["referenced"] = True, True
+            continue
+        r["collected"] = (None if not collected
+                          else p in collected or p.startswith(os.path.dirname(COLLECT_PY)))
+        # A per-project member file is named at runtime from the project's path, so its
+        # basename can never appear in code and testing for it accuses every one of them of
+        # being dead. Test the directory that owns it instead, and mark it a member so the
+        # findings count the ledger once rather than once per project.
+        parent = os.path.basename(os.path.dirname(p))
+        r["member_of"] = parent if parent in ("directives", "prompt-ledger", "tickets") else None
+        base = parent if r["member_of"] else os.path.basename(p)
+        r["referenced"] = bool(base) and base in blob
+
+
 def discover_drills() -> list:
     """Drills and their freshest verdict. A drill that has never run is a hope, per LAW 19."""
     reg = os.path.join(HOME, ".claude", "scripts", "drills", "register.json")
@@ -308,7 +468,8 @@ def discover_drills() -> list:
 
 def findings(rows: list) -> dict:
     """Duplicates, orphans and silos. The gap is the information, not the count."""
-    f = {"duplicates": [], "orphans": [], "silos": [], "unheld": []}
+    f = {"duplicates": [], "orphans": [], "silos": [], "unheld": [],
+         "uncollected": [], "unreferenced": []}
 
     # Same basename, different roots -- the classic "built it twice" shape.
     by_name = defaultdict(list)
@@ -349,22 +510,49 @@ def findings(rows: list) -> dict:
         if r["kind"] == "repo" and not r["offsite"]:
             f["unheld"].append({"id": r["id"], "path": r["path"],
                                 "tracked_files": r["tracked_files"]})
+
+    # A store the warehouse does not ingest is data the estate paid to produce and cannot
+    # query. Ranked by size, because the largest uncollected store is the largest thing the
+    # estate knows about itself and cannot answer a question with.
+    for r in rows:
+        if r["kind"] not in ("ledger", "data") or r.get("collected") is not False:
+            continue
+        if r.get("member_of"):
+            continue        # its parent ledger is already on this list; count the store once
+        f["uncollected"].append({"id": r["id"], "kind": r["kind"],
+                                 "size": r.get("mb", r.get("rows", 0)),
+                                 "unit": "MB" if r["kind"] == "data" else "rows"})
+    f["uncollected"].sort(key=lambda x: -(x["size"] if isinstance(x["size"], (int, float)) else 0))
+
+    # A store no script mentions is one nothing writes any more. Its last row is its last row.
+    for r in rows:
+        if (r["kind"] in ("ledger", "data") and r.get("referenced") is False
+                and not r.get("member_of")):
+            f["unreferenced"].append({"id": r["id"], "path": r["path"]})
     return f
 
 
 def collect() -> dict:
     rows = (discover_jobs() + discover_repos() + discover_guards()
-            + discover_ledgers() + discover_drills())
+            + discover_ledgers() + discover_data() + discover_drills())
+    annotate_reach(rows)
     return {"at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
             "rows": rows, "findings": findings(rows)}
 
 
 # ------------------------------------------------------------------ output
 
+def reach(r: dict) -> str:
+    """Two words per store: does the warehouse have it, does any code still touch it."""
+    c = r.get("collected")
+    got = "collected" if c else ("unknown" if c is None else "NOT COLLECTED")
+    return "%-13s %s" % (got, "" if r.get("referenced") else "NO CODE REFERS")
+
+
 def render(inv: dict, only_findings=False) -> None:
     rows, f = inv["rows"], inv["findings"]
     if not only_findings:
-        for kind in ("scheduled_job", "repo", "guard", "ledger", "drill"):
+        for kind in ("scheduled_job", "repo", "guard", "ledger", "data", "drill"):
             group = [r for r in rows if r["kind"] == kind]
             if not group:
                 continue
@@ -377,7 +565,9 @@ def render(inv: dict, only_findings=False) -> None:
                     extra = "%-9s %d tracked, %d dirty" % (
                         "offsite" if r["offsite"] else "LOCAL-ONLY", r["tracked_files"], r["dirty"])
                 elif kind == "ledger":
-                    extra = "%s rows" % r["rows"]
+                    extra = "%-9s rows  %s" % (r["rows"], reach(r))
+                elif kind == "data":
+                    extra = "%-9s MB    %s  %s" % (r["mb"], reach(r), r["what"][:38])
                 elif kind == "drill":
                     extra = "%-6s %sh" % (r["last_status"], r["age_h"])
                 print("  %-34s %-16s %s" % (r["id"][:34], r["root"], extra))
@@ -395,6 +585,12 @@ def render(inv: dict, only_findings=False) -> None:
     print("  silos                             : %d" % len(f["silos"]))
     for s in f["silos"]:
         print("      %s" % s["what"])
+    print("  stores nothing collects           : %d" % len(f["uncollected"]))
+    for u in f["uncollected"][:10]:
+        print("      %-40s %s %s" % (u["id"][:40], u["size"], u["unit"]))
+    print("  stores no code refers to          : %d" % len(f["unreferenced"]))
+    for u in f["unreferenced"][:10]:
+        print("      %s" % u["id"][:60])
 
 
 def main() -> int:

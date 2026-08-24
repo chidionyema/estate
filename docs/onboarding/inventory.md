@@ -65,3 +65,37 @@ agent ran it. The timestamp is the first field in the file for that reason.
 **GitHub unreachable.** One ledger row counts open issues over the network. If that call fails the
 row reads `-1` and says `UNREACHABLE this run` rather than silently reporting zero, because a zero
 there would read as "no open work".
+
+## The data kind, and the two reach columns
+
+**What it is for.** Answering "does anything collect this, and does anything still read it"
+without opening a file. Before this, the inventory could tell you a store existed and
+nothing else, so a store that had gone silent looked identical to one being written every
+minute.
+
+**What it costs.** One `du` per tree, with a 60 second timeout, and one pass over the estate's
+scripts to build a single blob that every store is then substring-tested against. The whole
+run stays under three minutes, which is the bound the file has always had: an inventory that
+cannot finish is an inventory nobody has.
+
+**What it covers.** Five named trees, every sqlite database under the four machinery roots,
+and both reach columns on every ledger as well.
+
+**How to turn it off.** Remove `discover_data` and `annotate_reach` from `collect()` in
+`scripts/inventory.py`. The other five kinds are untouched by either.
+
+**What goes wrong.**
+
+**The reference test matches on basename.** A store named `items.jsonl` matches any script
+mentioning that name, whoever owns it. It therefore over-reports reach and under-reports the
+finding, which is the safe direction for a number that accuses something of being dead.
+
+**Per-project files are named at runtime.** The directive and prompt-ledger files are built
+from a project path, so their basenames appear in no script and the first version of this
+accused all 50 of them of being unreferenced. They are matched on their parent directory and
+marked as members, so the ledger is counted once rather than once per project.
+
+**collect.py cannot be found.** The collected column is read out of
+`crew/science/collect.py` rather than copied, because a second copy of that list drifts
+silently. If the file is missing every store reads `unknown`, never `collected`, so a
+missing reader can never render as a clean estate.
