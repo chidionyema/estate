@@ -312,7 +312,17 @@ DATA_TREES = [
 
 #: Where the warehouse's source list lives. Read, never copied: a second copy of this list is a
 #: thing that drifts, and the drift is silent because both copies keep parsing.
-COLLECT_PY = os.path.join(HOME, "dev", "code", "crew", "science", "collect.py")
+#:
+#: It used to be scraped out of collect.py with a regex over `HOME / "..."` literals, which
+#: worked only for as long as the list happened to be Python. On 2026-08-24 the list moved into
+#: science/sources.json so that whoever owns a store can declare it without editing the
+#: collector, and the regex went to zero matches inside the hour. That failed safe -- an empty
+#: set reads as "unknown", never as "not collected" -- but it still cost the estate the answer.
+#: Reading the declaration rather than the program is the fix, and it is the same reason the
+#: declaration exists.
+SCIENCE = os.path.join(HOME, "dev", "code", "crew", "science")
+COLLECT_PY = os.path.join(SCIENCE, "collect.py")
+REGISTRY_JSON = os.path.join(SCIENCE, "sources.json")
 
 #: Code roots searched once to answer "does anything still refer to this store". Bounded to
 #: these three because they hold every script the estate runs.
@@ -322,18 +332,24 @@ CODE_ROOTS = [os.path.join(HOME, ".claude", "scripts"),
 
 
 def collected_paths() -> set:
-    """Absolute paths the science warehouse ingests, read out of collect.py itself.
+    """Absolute paths the science warehouse ingests, read out of its registry.
 
-    Returns an empty set when collect.py is missing, and the caller reports "unknown" rather
-    than "not collected" -- a missing reader must never be rendered as a clean estate.
+    Returns an empty set when the registry is missing or will not parse, and the caller
+    reports "unknown" rather than "not collected" -- a missing reader must never be rendered
+    as a clean estate.
     """
+    roots = {"home": HOME, "science": SCIENCE}
     try:
-        src = open(COLLECT_PY, errors="ignore").read()
+        reg = json.load(open(REGISTRY_JSON, errors="ignore"))
     except Exception:
         return set()
-    out = {os.path.join(HOME, m) for m in re.findall(r'HOME / "([^"]+)"', src)}
-    out |= {os.path.join(os.path.dirname(COLLECT_PY), m)
-            for m in re.findall(r'Path\(__file__\)\.parent / "([^"]+)"', src)}
+    for name, raw in (reg.get("roots") or {}).items():
+        roots.setdefault(name, os.path.expanduser(raw))
+    out = set()
+    for s in reg.get("sources", []):
+        root = roots.get(s.get("root", "home"))
+        if root and s.get("path"):
+            out.add(os.path.join(root, s["path"]))
     return out
 
 
@@ -408,6 +424,26 @@ def discover_data() -> list:
     return rows
 
 
+def _is_collected(path: str, collected: set) -> bool:
+    """Is this store already ingested by the warehouse, under any of its names.
+
+    Three ways it can be, and a plain `in` test only catches the first: the declaration names
+    this exact path; the declaration names the same file by another name, through a symlink;
+    or the declaration names a directory and this file sits inside it. Containment is tested
+    on the resolved path with a separator appended, so `/a/jobs2/x` is not swallowed by a
+    declaration of `/a/jobs`.
+    """
+    if path in collected:
+        return True
+    real = os.path.realpath(path)
+    for c in collected:
+        rc = os.path.realpath(c)
+        if real == rc or real.startswith(rc.rstrip(os.sep) + os.sep):
+            return True
+    # Everything the science directory holds is warehouse machinery, not an estate store.
+    return real.startswith(os.path.realpath(SCIENCE) + os.sep)
+
+
 def annotate_reach(rows: list) -> None:
     """Add two columns to every store: is it collected, and does any code still refer to it.
 
@@ -429,8 +465,15 @@ def annotate_reach(rows: list) -> None:
         if p.startswith("github:"):
             r["collected"], r["referenced"] = True, True
             continue
-        r["collected"] = (None if not collected
-                          else p in collected or p.startswith(os.path.dirname(COLLECT_PY)))
+        # Compare real paths, and count a file inside a collected directory as collected.
+        # Measured 2026-08-24: this said the estate board was collected by nothing, while the
+        # warehouse's own reconciliation said every store was declared. Both were reading the
+        # same registry. The board is one file reachable by two names --
+        # .estate/knowledge/board/estate-board.jsonl is a symlink to .claude/ESTATE_BOARD.jsonl
+        # -- and a string compare sees two files where a realpath compare sees one. The same
+        # blindness hid the six .claude/jobs/*/timeline.jsonl shards, which a directory source
+        # already collects whole.
+        r["collected"] = None if not collected else _is_collected(p, collected)
         # A per-project member file is named at runtime from the project's path, so its
         # basename can never appear in code and testing for it accuses every one of them of
         # being dead. Test the directory that owns it instead, and mark it a member so the
