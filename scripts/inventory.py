@@ -116,11 +116,19 @@ def discover_jobs() -> list:
         if not fn.endswith(".plist"):
             continue
         p = os.path.join(d, fn)
+        # A plist this cannot parse is NOT a job with no program, and reporting it as one
+        # is a lie that reads as a real finding. Measured 2026-08-24: com.estate.inventory
+        # was reported "no executable path" while it was running green under launchd, because
+        # its XML comment contained a `--`, which XML forbids inside comments. `plutil -lint`
+        # accepted the file; Python's expat refused it. Two parsers, two answers, and the
+        # silent `pl = {}` turned the disagreement into a fabricated orphan.
+        parse_error = ""
         try:
             with open(p, "rb") as fh:
                 pl = plistlib.load(fh)
-        except Exception:
+        except Exception as exc:                              # noqa: BLE001
             pl = {}
+            parse_error = "%s: %s" % (type(exc).__name__, exc)
         label = pl.get("Label") or fn[:-6]
         argv = pl.get("ProgramArguments") or ([pl["Program"]] if pl.get("Program") else [])
         # The executed path is the first argument that is a file, skipping the interpreter.
@@ -140,6 +148,7 @@ def discover_jobs() -> list:
             "last_status": decode_status(live.get(label)) if label in live else "not loaded",
             "interval_s": pl.get("StartInterval") or ("calendar" if pl.get("StartCalendarInterval") else None),
             "coupling": coupling_of(target + " " + label),
+            "parse_error": parse_error,
         })
     return rows
 
@@ -468,7 +477,7 @@ def discover_drills() -> list:
 
 def findings(rows: list) -> dict:
     """Duplicates, orphans and silos. The gap is the information, not the count."""
-    f = {"duplicates": [], "orphans": [], "silos": [], "unheld": [],
+    f = {"duplicates": [], "orphans": [], "unreadable": [], "silos": [], "unheld": [],
          "uncollected": [], "unreferenced": []}
 
     # Same basename, different roots -- the classic "built it twice" shape.
@@ -487,7 +496,9 @@ def findings(rows: list) -> dict:
     for r in rows:
         if r["kind"] != "scheduled_job":
             continue
-        if r["path"] == "(none)" or not os.path.exists(r["path"]):
+        if r.get("parse_error"):
+            f["unreadable"].append({"id": r["id"], "why": r["parse_error"], "path": r["plist"]})
+        elif r["path"] == "(none)" or not os.path.exists(r["path"]):
             f["orphans"].append({"id": r["id"], "why": "no executable path", "path": r["path"]})
         elif r["loaded"] and r["last_status"].startswith("exit "):
             f["orphans"].append({"id": r["id"], "why": r["last_status"], "path": r["path"]})
@@ -579,6 +590,9 @@ def render(inv: dict, only_findings=False) -> None:
     print("  orphans (job with no live target) : %d" % len(f["orphans"]))
     for o in f["orphans"][:10]:
         print("      %-34s %s" % (o["id"][:34], o["why"]))
+    print("  plists that will not parse        : %d" % len(f.get("unreadable", [])))
+    for o in f.get("unreadable", [])[:10]:
+        print("      %-34s %s" % (o["id"][:34], o["why"][:70]))
     print("  repos held on one disk only       : %d" % len(f["unheld"]))
     for u in f["unheld"][:10]:
         print("      %-26s %d tracked files" % (u["id"], u["tracked_files"]))
@@ -593,6 +607,122 @@ def render(inv: dict, only_findings=False) -> None:
         print("      %s" % u["id"][:60])
 
 
+# ---------------------------------------------------------------------------
+# DELIVERY. LAW 28: an instrument nobody reads is not an instrument.
+#
+# Measured 2026-08-24. This script already knew the answer to the founder's question
+# ("we have a crew board, our processes are still frganented") at 01:22 that morning:
+# "work is recorded in 77 places that do not join", "scheduled machinery runs from 6
+# roots". It wrote that into a JSON file, and nobody opened it. The founder asked the
+# question two hours later and a session then re-measured four of the 77 by hand.
+#
+# That is the whole root cause of the fragmentation this file measures. The estate keeps
+# building the instrument that would have prevented the problem, the instrument has no
+# reader, so the finding has to be rediscovered, and rediscovery is what produces the
+# duplicate. `scripts/inventory.py` here, `science/datamap.py` in crew and
+# `prospector-live/scripts/estate_inventory.py` are three inventories built inside two
+# days, and the only one launchd runs is the third, which exits 1 every hour because
+# macOS blocks getcwd under ~/Documents and its log is written there too.
+#
+# So delivery is part of the instrument, not plumbing underneath it. Two legs, because
+# the estate has two customers (LAW 36) who need opposite things:
+#
+#   the board    every run, always, so the state is readable at any moment by any session
+#                without anybody running anything, and PASS is distinguishable from NOT RUN
+#   the founder  only when a finding CHANGED, because an hourly push that says the same
+#                thing is how an alert becomes wallpaper
+#
+# Arrival is proved, not the send (LAW 28). send_operator_alert returns a Telegram message
+# id; that id is printed. A bare "sent" with nothing on the other end is the failure this
+# whole function is made of.
+FINDING_LABELS = {
+    "duplicates": "same thing built twice",
+    "silos": "stores that do not join",
+    "orphans": "jobs with no live target",
+    "unreadable": "plists that will not parse",
+    "unheld": "repos on one disk only",
+    "uncollected": "stores nothing collects",
+    "unreferenced": "stores no code refers to",
+}
+
+
+def _finding_keys(inv: dict) -> dict:
+    """A stable identity per finding, so a changed COUNT is not mistaken for a changed SET."""
+    f = inv.get("findings", {}) or {}
+    out = {}
+    for kind in FINDING_LABELS:
+        rows = f.get(kind, []) or []
+        keys = set()
+        for r in rows:
+            if not isinstance(r, dict):
+                keys.add(str(r))
+            else:
+                keys.add(str(r.get("name") or r.get("id") or r.get("what") or r))
+        out[kind] = keys
+    return out
+
+
+def deliver(inv: dict, prev: dict) -> int:
+    now, was = _finding_keys(inv), _finding_keys(prev)
+    headline = "  ".join(
+        "%s=%d" % (k, len(now[k])) for k in FINDING_LABELS if now[k]
+    ) or "no findings"
+    total = sum(len(v) for v in now.values())
+
+    appeared, gone = {}, {}
+    for kind in FINDING_LABELS:
+        a_, g_ = sorted(now[kind] - was[kind]), sorted(was[kind] - now[kind])
+        if a_:
+            appeared[kind] = a_
+        if g_:
+            gone[kind] = g_
+
+    # Leg one: the board, every run. This is the readable state, and it is what makes
+    # "nothing changed" distinguishable from "nothing ran".
+    board_line = "inventory %s assets=%d %s" % (inv.get("at", "?"), len(inv.get("rows", [])), headline)
+    board_ok = False
+    try:
+        subprocess.run(
+            [sys.executable, os.path.expanduser("~/.claude/scripts/estate-broadcast.py"),
+             "--from", "estate-inventory", "--kind", "state", "--priority",
+             "high" if appeared else "low", "--message", board_line],
+            check=True, capture_output=True, timeout=30)
+        board_ok = True
+    except Exception as exc:                                  # noqa: BLE001
+        print("  board: NOT WRITTEN (%s)" % exc)
+    print("  board: %s" % ("written" if board_ok else "failed"))
+
+    if not appeared and not gone:
+        print("  founder: nothing pushed, no finding changed since %s" % (prev.get("at") or "never"))
+        print("  state: %d finding(s) standing -- %s" % (total, headline))
+        return 0
+
+    lines = ["\U0001f5c2 Estate inventory changed", "", "%d assets, %s" % (len(inv.get("rows", [])), headline), ""]
+    for kind, items in appeared.items():
+        lines.append("NEW %s (%d):" % (FINDING_LABELS[kind], len(items)))
+        lines += ["  " + i[:110] for i in items[:5]]
+        if len(items) > 5:
+            lines.append("  ... and %d more" % (len(items) - 5))
+    for kind, items in gone.items():
+        lines.append("CLEARED %s (%d)" % (FINDING_LABELS[kind], len(items)))
+    lines += ["", "python3 ~/.estate/scripts/inventory.py"]
+
+    try:
+        sys.path.insert(0, os.path.expanduser("~/.claude/scripts/estate"))
+        from estate_alert import send_operator_alert  # noqa: PLC0415
+        # No debounce key reuse across content: a changed finding is never wallpaper.
+        mid = send_operator_alert("\n".join(lines), debounce_key="inventory-change", debounce_s=1)
+    except Exception as exc:                                  # noqa: BLE001
+        print("  founder: SEND FAILED (%s)" % exc)
+        return 1
+    if not mid:
+        print("  founder: NOT DELIVERED -- send returned %r. This instrument is mute; "
+              "that is the LAW 28 failure and it is not a warning, it is the outage." % (mid,))
+        return 1
+    print("  founder: delivered, telegram message id %s" % mid)
+    return 0
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(prog="inventory.py", description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -600,6 +730,10 @@ def main() -> int:
     ap.add_argument("--duplicates", action="store_true", help="only the findings")
     ap.add_argument("--check", action="store_true",
                     help="exit 1 when a duplicate appeared that the last run did not have")
+    ap.add_argument("--deliver", action="store_true",
+                    help="LAW 28. Write the headline to the board every run so the state is "
+                         "readable without anybody running this, and push to the founder only "
+                         "when a finding actually changed.")
     a = ap.parse_args()
 
     prev = {}
@@ -621,6 +755,12 @@ def main() -> int:
         return 0
     render(inv, only_findings=a.duplicates)
     print("\nwritten: %s  (%d assets)" % (OUT, len(inv["rows"])))
+
+    if a.deliver:
+        print("\nDELIVERY")
+        rc = deliver(inv, prev)
+        if rc:
+            return rc
 
     if a.check:
         was = {d["name"] for d in prev.get("findings", {}).get("duplicates", [])}

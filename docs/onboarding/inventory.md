@@ -34,23 +34,63 @@ Five kinds of thing, all discovered rather than declared:
 It changes nothing. It reads, it counts, it writes one file. There is no path through it that
 touches a job, a repo or a credential.
 
+## Who reads it, and how it reaches you
+
+This is the part that was missing until 2026-08-24, and it was the whole problem. The inventory
+ran, found the answer, wrote it into a file, and nobody opened the file. On the morning of the 24th
+it had already reported "work is recorded in 77 places that do not join" and "scheduled machinery
+runs from 6 roots" at 01:22. Two hours later you asked why the processes were still fragmented. The
+answer was sitting on this disk, unread, and a session then went and measured four of the
+seventy-seven by hand. That is how the same thing gets built three times.
+
+So the run now delivers, on two legs, and they are deliberately different:
+
+- **The board, every single run.** One line to `~/.claude/scripts/estate-broadcast.py`, so any
+  session on any provider sees the current finding set without running anything. Green is a result
+  too: a run that finds nothing still writes, so silence on the board means the job is dead rather
+  than the estate being clean.
+- **Your phone, only when a finding actually changed.** Not when a count moves, when the *set*
+  moves: a new duplicate appears, an orphan gets fixed, a store goes silent. Nothing is pushed for a
+  quiet run, which is the only reason the pushes are worth reading.
+
+## What it costs you in attention
+
+One message when something changes, and nothing otherwise. An hourly all-clear would train you to
+ignore the channel inside a day, and an alarm you ignore is worse than no alarm, because the next
+agent reads a quiet phone as a healthy estate.
+
 ## Where it lives
 
-`~/.estate/scripts/inventory.py`, and it writes `~/.estate/state/inventory.json`. It sits in
-`~/.estate` on purpose rather than in `~/.claude`, because an inventory of the whole estate that
-lives inside one vendor's directory is exactly the lock-in the inventory exists to measure.
+`~/.estate/scripts/inventory.py`, scheduled hourly by
+`~/.estate/launchagents/com.estate.inventory.plist`, writing `~/.estate/state/inventory.json` and
+`~/.estate/state/logs/inventory.log`. It sits in `~/.estate` rather than `~/.claude` because an
+inventory of the whole estate that lives inside one vendor's directory is exactly the lock-in the
+inventory exists to measure. The plist is committed here and installed by copying it into
+`~/Library/LaunchAgents/`, so the schedule has a diff somebody can review instead of being a file
+that appeared on one machine.
 
 ## How to stop it
 
-It is not scheduled yet, so right now there is nothing running to stop. When it is scheduled, one
-command ends it:
+One command, effective immediately:
 
 ```
-launchctl bootout gui/$(id -u)/ai.estate.inventory
+launchctl bootout gui/$(id -u)/com.estate.inventory
 ```
 
-To start it again, `launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/ai.estate.inventory.plist`.
-Deleting `~/.estate/state/inventory.json` costs nothing; the next run rebuilds it from scratch.
+To start it again:
+
+```
+cp ~/.estate/launchagents/com.estate.inventory.plist ~/Library/LaunchAgents/
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.estate.inventory.plist
+```
+
+To keep the run but silence the phone, drop `--deliver` from the plist arguments and reload. Both
+legs hang off that one flag, so this also stops the board line. Keeping one without the other is
+not possible today, and that is a limitation rather than a decision.
+
+Deleting `~/.estate/state/inventory.json` costs nothing; the next run rebuilds it from scratch. It
+is also what the delivery leg compares against, so deleting it makes the next run push once as
+though every standing finding were new.
 
 ## What goes wrong
 
