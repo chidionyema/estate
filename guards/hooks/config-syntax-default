@@ -1,0 +1,57 @@
+#!/usr/bin/env bash
+# Shared pre-commit default: refuse a commit that stages an unparseable config file.
+#
+# WHY THIS EXISTS
+# 2026-08-24. A double hyphen inside an XML comment in
+# idp/observability/clickhouse-low-memory.xml is illegal, so ClickHouse refused the
+# whole file and crash-looped. langfuse-web and langfuse-worker wait on clickhouse
+# being healthy, so neither was ever created, and docker ps -a showed them as
+# Created, which reads as "not started yet" rather than "blocked upstream". Three
+# hours. LAW 45 says the mistake is not closed until no session can walk past it.
+#
+# The primary guard is PreToolUse on Write and Edit, which catches every Claude
+# session before the bytes land. This is the second layer, for the writes that never
+# go through a Claude tool: a human editor, another vendor's CLI, a generated file.
+#
+# WHY NOT pre-commit (the framework)
+# pre-commit's check-xml / check-yaml / check-json / check-toml (pre-commit-hooks
+# v6.0.0) are the mature tools for this and would be the right answer on a normal
+# machine. `pre-commit install` refuses to run when core.hooksPath is set, and every
+# repository on this estate sets core.hooksPath to this directory so that one router
+# serves them all. Installing the framework means giving that up in every repo. So
+# this calls the estate's own checker, which is one implementation shared with the
+# PreToolUse guard and the scheduled sweep -- three callers, one definition of
+# "broken" (LAW 3).
+#
+# HOW IT FAILS
+# Open. No python3, no checker, no staged files -> exit 0 and the commit proceeds.
+# A gate that blocks every commit on this machine is a worse outage than the defect
+# it prevents, and this router has already caused that once (see _router).
+#
+# THE ESCAPE
+#   git commit --no-verify
+set -uo pipefail
+
+SWEEP="$HOME/.claude/scripts/config-syntax-sweep.py"
+command -v python3 >/dev/null 2>&1 || exit 0
+[ -f "$SWEEP" ] || exit 0
+
+# Added, copied or modified files only. A deleted file has nothing to parse.
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z \
+  | tr '\0' '\n' | grep -Ei '\.(xml|ya?ml|json|jsonc|toml)$' || true)
+[ "${#staged[@]}" -gt 0 ] || exit 0
+
+out="$(python3 "$SWEEP" --files "${staged[@]}" 2>&1)"
+rc=$?
+[ "$rc" -eq 0 ] && exit 0
+
+echo "$out" >&2
+cat >&2 <<'EOF'
+
+REFUSED: a staged config file cannot be parsed by the service that reads it.
+A service refuses the whole file at startup, and anything waiting on its health
+is never created -- which reads as "not started yet", not as a fault.
+
+Fix the syntax, or commit with --no-verify and say why.
+EOF
+exit 1
