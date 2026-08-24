@@ -91,3 +91,122 @@ $ ls -d ~/dev/code/maestro ~/Documents/code/maestro ~/dev/code/hermes-v2 ~/Docum
 The Documents copies are gone. The zero was honest and the remembered fact was stale. That is the
 whole argument for this file existing: a discovered inventory beats a remembered one, including
 when the memory belongs to the agent doing the remembering.
+
+## Data assets, and whether anything collects or reads them
+
+Added 2026-08-24. The inventory counted 184 assets and omitted the three largest data stores
+on the machine, because `discover_ledgers` skips trees by path. An inventory that omits the
+biggest thing it owns reads as a complete list.
+
+```
+$ python3 scripts/inventory.py
+DATA  (10)
+  transcripts                        ~/.claude        6532.1    MB    NOT COLLECTED   every session verbatim: his words, eve
+  telemetry                          ~/.claude        1179.3    MB    NOT COLLECTED   the CLI's own failed event uploads
+  toolguard-decisions                ~/.claude        28.5      MB    NOT COLLECTED   one file per tool decision
+  maestro-intents                    (outside)        0.8       MB    NOT COLLECTED   what maestro sensed, one file per cycl
+  prospector-dossiers                ~/Documents/code 0.0       MB    NOT COLLECTED   the candidates the vetting gates score
+  prospector-dossiers-worktree       ~/Documents/code 130.9     MB    NOT COLLECTED   the same dossiers, in an abandoned wor
+  .claude/state/coord/jobs.sqlite    ~/.claude        0.09      MB    NOT COLLECTED   database
+  .estate/knowledge/maestro/experien ~/.estate        0.31      MB    NOT COLLECTED   database
+  .maestro/experience_graph.db       (outside)        0.31      MB    NOT COLLECTED   database
+  dev/code/crew/science/warehouse.db ~/dev/code       2.57      MB    collected       database
+```
+
+Two columns now answer the two questions that decide whether a store is an asset or a
+liability: does the warehouse have it, and does any script still refer to it.
+
+```
+$ python3 scripts/inventory.py --duplicates
+  stores nothing collects           : 23
+      .claude/history.jsonl                    12906 rows
+      state/prompt-ledger                      7022 rows
+      directives                               6921 rows
+      transcripts                              6532.1 MB
+      telemetry                                1179.3 MB
+      prospector-dossiers-worktree             130.9 MB
+      .claude/jobs/12e8b160/timeline.jsonl     90 rows
+      .claude/jobs/eb9b726d/timeline.jsonl     89 rows
+      .estate/knowledge/board/estate-board.jso 61 rows
+      .claude/jobs/76b8a979/timeline.jsonl     50 rows
+  stores no code refers to          : 7
+      .claude/jobs/eb9b726d/timeline.jsonl
+      .claude/jobs/08520926/timeline.jsonl
+      .claude/jobs/963d527f/timeline.jsonl
+      .claude/jobs/12e8b160/timeline.jsonl
+      .claude/jobs/ec68440c/timeline.jsonl
+      .claude/jobs/76b8a979/timeline.jsonl
+      .estate/knowledge/board/estate-board.jsonl
+```
+
+6.5 GB of transcripts and 6,921 of the founder's own messages were being produced and could
+not be queried. The `attention` collection in `crew/science/outcomes.py` was built off this
+finding on the same day.
+
+The row reading `prospector-dossiers  0.0 MB` beside `prospector-dossiers-worktree 130.9 MB`
+is the shape this file exists to make visible: every dossier the estate has ever scored lives
+in an abandoned agent worktree, and the live store it is meant to be in holds nothing.
+
+## The delivery, which is the half that was missing
+
+Everything above was true on the morning of 2026-08-24 and nobody had read a word of it. The
+inventory ran, wrote its file, and stopped. `--deliver` closes that: the board gets a line every
+run, and the founder's phone gets one only when the finding *set* changes.
+
+A quiet run. Nothing changed since the last one, so nothing is pushed:
+
+```
+$ python3 ~/.estate/scripts/inventory.py --deliver
+...
+written: /Users/chidionyema/.estate/state/inventory.json  (204 assets)
+
+DELIVERY
+  board: written
+  founder: nothing pushed, no finding changed since 2026-08-24T02:39:43Z
+  state: 38 finding(s) standing -- duplicates=1  silos=2  orphans=1  unheld=1  uncollected=26  unreferenced=7
+```
+
+The same job under launchd, on the hour, after a finding did change. This block is the tail of
+`~/.estate/state/logs/inventory.log`, written by launchd and not by a person:
+
+```
+written: /Users/chidionyema/.estate/state/inventory.json  (204 assets)
+
+DELIVERY
+  board: written
+  founder: delivered, telegram message id 13282
+```
+
+A message id is the receipt. A `sent` with nothing on the other end is what this was built to stop.
+
+## The schedule, and the job it did not replace
+
+```
+$ launchctl list | grep -i estate.inventory
+-	0	com.estate.inventory
+-	1	com.prospector.estate-inventory
+```
+
+Two jobs, two exit codes, and the pair is the finding. `com.estate.inventory` is this file, running
+green. `com.prospector.estate-inventory` is a different script of the same name in
+`~/Documents/code/prospector-live`; it inventories cloud resources, it has exited 1 every hour for
+weeks because macOS TCC refuses `getcwd` under `~/Documents`, and it writes its log into that same
+blocked directory. It is ticketed rather than repointed, because it answers a different question and
+silently deleting somebody's job is not a fix.
+
+## A finding class that used to be a lie
+
+A plist this cannot parse is not a job with no program, and reporting it as one reads as a real
+orphan. Measured on 2026-08-24: `com.estate.inventory` was reported "no executable path" while it
+was running green, because its XML comment contained a `--`, which XML forbids inside comments.
+`plutil -lint` accepted the file and Python's expat refused it. Two parsers, two answers, and a
+silent fallback turned the disagreement into a fabricated finding.
+
+```
+  orphans (job with no live target) : 1
+      com.valvesoftware.steamclean       no executable path
+  plists that will not parse        : 0
+```
+
+An unreadable plist now lands in its own row with the parser's own error, and the orphan count means
+what it says.

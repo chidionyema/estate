@@ -38,4 +38,15 @@ if [ "$name" = "pre-push" ]; then
   # remember to install.
   exec "$(dirname "$0")/law32-default" "$@"
 fi
+
+# pre-commit gets a shared default too, for the same reason pre-push does: a gate
+# each repository must remember to install is a gate most repositories do not have.
+# It refuses a commit that stages a config file the service reading it cannot parse
+# (LAW 45, 2026-08-24). It fails open on a missing python3 or a missing checker.
+if [ "$name" = "pre-commit" ]; then
+  shared="$(dirname "$0")/config-syntax-default"
+  if [ -x "$shared" ]; then
+    exec "$shared" "$@"
+  fi
+fi
 exit 0

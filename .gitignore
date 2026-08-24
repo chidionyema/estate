@@ -12,4 +12,14 @@
 !docs/**
 !scripts/
 !scripts/**
+# Build products are a copy of something already tracked (LAW 24), and a committed
+# __pycache__ is how a stale .pyc outlives the source it was built from.
+scripts/**/__pycache__/
+**/*.pyc
+# The launchd plists are load-bearing: they are the only record of what runs on a
+# schedule and when. Measured 2026-08-24 -- com.estate.inventory was written straight
+# into ~/Library/LaunchAgents where no repository would ever have shown its diff, which
+# is exactly the class LAW 24 names. The plists are committed here and installed by copy.
+!launchagents/
+!launchagents/**
 state/inventory.json
