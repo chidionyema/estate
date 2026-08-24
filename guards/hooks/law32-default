@@ -47,6 +47,25 @@ pair_problem() {
   printf '%b' "$_p"
 }
 
+# Every complete pair this push adds, anywhere in the range. A feature's code and its two
+# pages routinely land in different commits of one push, and that is normal work, not a
+# feature shipped undocumented. Refusing it was measured on 2026-08-24: a push carrying
+# `feat: enforce the documentation standard` in one commit and docs/demo/docs-standard.md
+# plus docs/onboarding/docs-standard.md in the next was blocked, with the gate asking for
+# docs/demo/enforce.md -- a name it had picked out of the sentence. That is the same class
+# as the 2026-08-23 defect this file's previous fix addressed one instance of: the gate
+# demanding that the pair be discoverable from the feat commit alone.
+#
+# The 2026-08-23 protection is kept, and it is the reason for claiming rather than merely
+# looking. One well-documented feature must not excuse every other feat: commit beside it,
+# so each feat: commit consumes a DISTINCT pair. Three features in a push need three pairs.
+push_pairs="$(git log --format='%H' "$base"..HEAD 2>/dev/null \
+  | while IFS= read -r _s; do
+      git show --name-only --format= "$_s" 2>/dev/null \
+        | sed -n 's#^docs/demo/\(.*\)\.md$#\1#p'
+    done | sort -u)"
+claimed=""
+
 missing=""
 while IFS= read -r line; do
   [ -n "$line" ] || continue
@@ -73,9 +92,22 @@ while IFS= read -r line; do
       [ -n "$cand" ] || continue
       if [ -z "$(pair_problem "$cand")" ]; then
         problem=""
+        claimed="$claimed $cand"
         break
       fi
     done <<< "$added"
+  fi
+  # Still nothing? Take an unclaimed complete pair from elsewhere in the same push.
+  if [ -n "$problem" ] && [ -n "$push_pairs" ]; then
+    while IFS= read -r cand; do
+      [ -n "$cand" ] || continue
+      case " $claimed " in *" $cand "*) continue ;; esac
+      if [ -z "$(pair_problem "$cand")" ]; then
+        problem=""
+        claimed="$claimed $cand"
+        break
+      fi
+    done <<< "$push_pairs"
   fi
   if [ -n "$problem" ]; then
     missing="$missing\n  (from: $subject)$problem"
