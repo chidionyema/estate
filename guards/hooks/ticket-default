@@ -1,0 +1,31 @@
+#!/usr/bin/env bash
+# Shared commit-msg default (crew#53). Founder, 2026-08-23: "it should be impossible to
+# work without a ticket, across the estate". ticket-gate.py covers Claude Code sessions
+# only; codex (~/.codex/config.toml) and gemini (~/.gemini/settings.json) carry no
+# pre-tool hook (checked 2026-08-26), so the commit is the earliest point every tool
+# passes through. Every repository inherits this through core.hooksPath -> _router.
+#
+# A commit passes when its message or its branch names an issue: crew#12, idp#226,
+# owner/repo#7, (#12), issue-12, crew-12. Merge, revert, fixup and squash commits pass:
+# they inherit the ticket of the commit they act on. ESTATE_TICKET_OVERRIDE=<reason>
+# passes and prints the reason, so the escape hatch leaves a line in the terminal.
+set -euo pipefail
+msg_file="${1:-}"
+[ -n "$msg_file" ] && [ -r "$msg_file" ] || exit 0
+msg="$(grep -v '^#' "$msg_file" || true)"
+branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
+pat='(^|[^A-Za-z0-9])([A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]*#[0-9]+|(^|[^A-Za-z0-9])(issue|crew|idp|gh)-[0-9]+'
+if printf '%s\n%s\n' "$msg" "$branch" | grep -Eqi "$pat"; then exit 0; fi
+if printf '%s' "$msg" | grep -Eqi '^(merge |revert |fixup! |squash! |amend! )'; then exit 0; fi
+if [ -n "${ESTATE_TICKET_OVERRIDE:-}" ]; then
+  echo "ticket-default: no issue named; passing on ESTATE_TICKET_OVERRIDE=${ESTATE_TICKET_OVERRIDE}" >&2
+  exit 0
+fi
+cat >&2 <<MSG
+ticket-default: refusing a commit that names no issue (crew#53).
+  message  $(printf '%s' "$msg" | head -1)
+  branch   $branch
+  fix      put the ticket in the subject, e.g. "... (crew#53)", or work on a branch named for it
+  escape   ESTATE_TICKET_OVERRIDE="<why>" git commit ...   (the reason is printed)
+MSG
+exit 1
