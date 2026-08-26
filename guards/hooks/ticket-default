@@ -12,6 +12,10 @@
 set -euo pipefail
 msg_file="${1:-}"
 [ -n "$msg_file" ] && [ -r "$msg_file" ] || exit 0
+# A repository with no remote is scratch: a test fixture, a selftest temp dir, an experiment.
+# Refusing there broke hermes-v2 tests/test_incident_crew182_cp7_dispatch.py within the hour
+# of landing (LAW 38: a guard that refuses correct work is an outage). Every estate repo has one.
+if [ -z "$(git remote 2>/dev/null)" ]; then exit 0; fi
 msg="$(grep -v '^#' "$msg_file" || true)"
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 pat='(^|[^A-Za-z0-9])([A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]*#[0-9]+|(^|[^A-Za-z0-9])(issue|crew|idp|gh)-[0-9]+'
