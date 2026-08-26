@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+# Incident test for crew#326 (2026-08-26 17:06Z) and the 2026-08-23 22:04 incident before it:
+# _router is one file symlinked as every hook name, so it must dispatch on the name it was
+# called under. Both times it stopped doing that, every commit and push on the machine was
+# refused. Runs _router as pre-commit, commit-msg and pre-push inside a temp repo that has
+# no .githooks/ and no scripts/hooks/: the first two must exit 0 (optional hooks), and
+# pre-push must reach the shared LAW 32 gate instead of refusing on absence.
+set -uo pipefail
+hooks="$(cd "$(dirname "$0")/../hooks" && pwd)"
+tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT
+git -C "$tmp" init -q && git -C "$tmp" -c core.hooksPath=/dev/null commit -q --allow-empty -m init
+bad=0
+for name in pre-commit commit-msg; do
+  out="$(cd "$tmp" && ln -sf "$hooks/_router" "$tmp/$name" && "$tmp/$name" 2>&1)"; rc=$?
+  if [ $rc -ne 0 ]; then echo "FAIL  router-selftest $name refused in a repo with no .githooks: $out"; bad=1; else echo "PASS  router-selftest $name exits 0 with no repo hook"; fi
+done
+out="$(cd "$tmp" && ln -sf "$hooks/_router" "$tmp/pre-push" && ROUTER_SELFTEST=1 "$tmp/pre-push" origin https://example.invalid/x.git </dev/null 2>&1)"
+if echo "$out" | grep -q "githooks/pre-push missing"; then echo "FAIL  router-selftest pre-push refuses on absence instead of running law32-default"; bad=1; else echo "PASS  router-selftest pre-push reaches the shared gate (no refuse-on-absence)"; fi
+# Refuse half: the 298-byte stub from 2026-08-26 must fail this test.
+stub="$tmp/stub"; printf '#!/usr/bin/env bash\nset -euo pipefail\ntop="$(git rev-parse --show-toplevel)"\nhook="$top/.githooks/pre-push"\n[ -x "$hook" ] || { echo "pre-push: $hook missing"; exit 1; }\n' > "$stub"; chmod +x "$stub"
+( cd "$tmp" && ln -sf "$stub" "$tmp/pre-commit" && "$tmp/pre-commit" >/dev/null 2>&1 ) && { echo "FAIL  router-selftest the refuse-all stub passed as pre-commit"; bad=1; } || echo "PASS  router-selftest the refuse-all stub is refused (test can fail)"
+[ $bad = 0 ] && echo "ok    router-selftest _router dispatches per hook name" || echo "FAIL  router-selftest"
+exit $bad
