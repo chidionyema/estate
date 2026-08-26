@@ -19,5 +19,14 @@ if echo "$out" | grep -q "githooks/pre-push missing"; then echo "FAIL  router-se
 # Refuse half: the 298-byte stub from 2026-08-26 must fail this test.
 stub="$tmp/stub"; printf '#!/usr/bin/env bash\nset -euo pipefail\ntop="$(git rev-parse --show-toplevel)"\nhook="$top/.githooks/pre-push"\n[ -x "$hook" ] || { echo "pre-push: $hook missing"; exit 1; }\n' > "$stub"; chmod +x "$stub"
 ( cd "$tmp" && ln -sf "$stub" "$tmp/pre-commit" && "$tmp/pre-commit" >/dev/null 2>&1 ) && { echo "FAIL  router-selftest the refuse-all stub passed as pre-commit"; bad=1; } || echo "PASS  router-selftest the refuse-all stub is refused (test can fail)"
+# crew#53: commit-msg carries the ticket default. Both ways: a message with no issue is
+# refused, a message naming one passes, and a merge message passes without one.
+tm="$tmp/msg"
+printf 'tidy whitespace\n' > "$tm"
+( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && { echo "FAIL  router-selftest commit-msg passed a message naming no issue"; bad=1; } || echo "PASS  router-selftest commit-msg refuses a message naming no issue (test can fail)"
+printf 'tidy whitespace (crew#53)\n' > "$tm"
+( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && echo "PASS  router-selftest commit-msg passes a message naming crew#53" || { echo "FAIL  router-selftest commit-msg refused a message naming crew#53"; bad=1; }
+printf "Merge branch 'x'\n" > "$tm"
+( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && echo "PASS  router-selftest commit-msg passes a merge message" || { echo "FAIL  router-selftest commit-msg refused a merge message"; bad=1; }
 [ $bad = 0 ] && echo "ok    router-selftest _router dispatches per hook name" || echo "FAIL  router-selftest"
 exit $bad

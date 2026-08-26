@@ -6,6 +6,16 @@
 # made anywhere on this machine.
 set -euo pipefail
 name="$(basename "$0")"
+# Resolve the directory the shared defaults live in through the symlink, not around it.
+# dirname "$0" is the caller's hook directory; when that is not this directory (a repo
+# that linked the router itself, or the selftest) every shared default was skipped with
+# exit 0 and nothing said so. Found by the crew#53 selftest case on 2026-08-26.
+self="$0"
+if [ -L "$self" ]; then
+  tgt="$(readlink "$self")"
+  case "$tgt" in /*) self="$tgt" ;; *) self="$(dirname "$self")/$tgt" ;; esac
+fi
+here="$(cd "$(dirname "$self")" && pwd)"
 top="$(git rev-parse --show-toplevel)"
 hook="$top/.githooks/$name"
 
@@ -36,7 +46,7 @@ if [ "$name" = "pre-push" ]; then
   # already say twice why that is the wrong trade. The law is still enforced; it is now
   # enforced by something every repository inherits instead of something each one must
   # remember to install.
-  exec "$(dirname "$0")/law32-default" "$@"
+  exec "$here/law32-default" "$@"
 fi
 
 # pre-commit gets a shared default too, for the same reason pre-push does: a gate
@@ -44,7 +54,16 @@ fi
 # It refuses a commit that stages a config file the service reading it cannot parse
 # (LAW 45, 2026-08-24). It fails open on a missing python3 or a missing checker.
 if [ "$name" = "pre-commit" ]; then
-  shared="$(dirname "$0")/config-syntax-default"
+  shared="$here/config-syntax-default"
+  if [ -x "$shared" ]; then
+    exec "$shared" "$@"
+  fi
+fi
+
+# commit-msg gets a shared default for crew#53: a commit that names no issue is refused
+# in every repository, whichever tool wrote it. ticket-gate.py only sees Claude Code.
+if [ "$name" = "commit-msg" ]; then
+  shared="$here/ticket-default"
   if [ -x "$shared" ]; then
     exec "$shared" "$@"
   fi
