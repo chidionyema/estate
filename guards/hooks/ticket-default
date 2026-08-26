@@ -16,6 +16,14 @@ msg_file="${1:-}"
 # Refusing there broke hermes-v2 tests/test_incident_crew182_cp7_dispatch.py within the hour
 # of landing (LAW 38: a guard that refuses correct work is an outage). Every estate repo has one.
 if [ -z "$(git remote 2>/dev/null)" ]; then exit 0; fi
+# A test fixture is not an estate repository, even when the test gives it a remote:
+# prospector's test_worktree_census and test_worktree_snapshot_touches_nothing commit inside
+# pytest temp clones and were refused here on 2026-08-26 (12 tests red). Pytest names itself
+# in PYTEST_CURRENT_TEST; a repo under the OS temp dir is the same class from any runner.
+if [ -n "${PYTEST_CURRENT_TEST:-}" ]; then exit 0; fi
+case "$(git rev-parse --show-toplevel 2>/dev/null)" in
+  "${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) exit 0 ;;
+esac
 msg="$(grep -v '^#' "$msg_file" || true)"
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 pat='(^|[^A-Za-z0-9])([A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]*#[0-9]+|(^|[^A-Za-z0-9])(issue|crew|idp|gh)-[0-9]+'
