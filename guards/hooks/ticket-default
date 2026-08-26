@@ -20,10 +20,14 @@ if [ -z "$(git remote 2>/dev/null)" ]; then exit 0; fi
 # prospector's test_worktree_census and test_worktree_snapshot_touches_nothing commit inside
 # pytest temp clones and were refused here on 2026-08-26 (12 tests red). Pytest names itself
 # in PYTEST_CURRENT_TEST; a repo under the OS temp dir is the same class from any runner.
-if [ -n "${PYTEST_CURRENT_TEST:-}" ]; then exit 0; fi
-case "$(git rev-parse --show-toplevel 2>/dev/null)" in
-  "${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) exit 0 ;;
-esac
+# router-selftest builds its fixture under the temp dir too, and its negative case must
+# still be refused there, so it sets ESTATE_TICKET_STRICT=1 to switch these two off.
+if [ -z "${ESTATE_TICKET_STRICT:-}" ]; then
+  if [ -n "${PYTEST_CURRENT_TEST:-}" ]; then exit 0; fi
+  case "$(git rev-parse --show-toplevel 2>/dev/null)" in
+    "${TMPDIR:-/tmp}"*|/tmp/*|/private/tmp/*|/private/var/folders/*|/var/folders/*) exit 0 ;;
+  esac
+fi
 msg="$(grep -v '^#' "$msg_file" || true)"
 branch="$(git rev-parse --abbrev-ref HEAD 2>/dev/null || echo "")"
 pat='(^|[^A-Za-z0-9])([A-Za-z0-9_.-]+/)?[A-Za-z0-9_.-]*#[0-9]+|(^|[^A-Za-z0-9])(issue|crew|idp|gh)-[0-9]+'

@@ -25,7 +25,7 @@ tm="$tmp/msg"
 printf 'tidy whitespace\n' > "$tm"
 ( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && echo "PASS  router-selftest commit-msg passes in a repo with no remote (scratch)" || { echo "FAIL  router-selftest commit-msg refused a scratch repo with no remote"; bad=1; }
 git -C "$tmp" remote add origin https://example.invalid/x.git
-( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && { echo "FAIL  router-selftest commit-msg passed a message naming no issue"; bad=1; } || echo "PASS  router-selftest commit-msg refuses a message naming no issue (test can fail)"
+( cd "$tmp" && ESTATE_TICKET_STRICT=1 "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && { echo "FAIL  router-selftest commit-msg passed a message naming no issue"; bad=1; } || echo "PASS  router-selftest commit-msg refuses a message naming no issue (test can fail)"
 printf 'tidy whitespace (crew#53)\n' > "$tm"
 ( cd "$tmp" && "$tmp/commit-msg" "$tm" >/dev/null 2>&1 ) && echo "PASS  router-selftest commit-msg passes a message naming crew#53" || { echo "FAIL  router-selftest commit-msg refused a message naming crew#53"; bad=1; }
 printf "Merge branch 'x'\n" > "$tm"
