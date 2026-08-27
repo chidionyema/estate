@@ -25,3 +25,5 @@ scripts/**/__pycache__/
 state/inventory.json
 !tests/
 !tests/*.py
+!.github/
+!.github/CODEOWNERS
