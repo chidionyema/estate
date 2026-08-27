@@ -27,3 +27,7 @@ state/inventory.json
 !tests/*.py
 !.github/
 !.github/CODEOWNERS
+# Workflows are load-bearing (LAW 24): security-scan.yml was force-added past the deny-all
+# and every later template copy was silently ignored (crew#504, 2026-08-27).
+!.github/workflows/
+!.github/workflows/*.yml
