@@ -100,6 +100,19 @@ def decode_status(raw) -> str:
     return "signal %d" % s
 
 
+def job_status(pid: str, raw) -> str:
+    """A job with a live PID is running; its wait status is the PREVIOUS run's.
+
+    crew#478, 2026-08-27: ai.architect.gateway and com.chidionyema.maestro are KeepAlive
+    daemons that were writing logs at the moment the showcase graded them GAP on
+    'signal 1', the exit of an instance launchd had already restarted. launchctl list
+    prints PID first and '-' when nothing is running; the status column is history.
+    """
+    if pid not in ("-", "", None):
+        return "running"
+    return decode_status(raw)
+
+
 # ------------------------------------------------------------------ discovery
 
 def discover_jobs() -> list:
@@ -108,7 +121,7 @@ def discover_jobs() -> list:
     for line in sh(["/bin/launchctl", "list"]).splitlines()[1:]:
         parts = line.split("\t")
         if len(parts) == 3:
-            live[parts[2]] = parts[1]
+            live[parts[2]] = job_status(parts[0], parts[1])
 
     rows = []
     d = os.path.join(HOME, "Library", "LaunchAgents")
@@ -145,7 +158,7 @@ def discover_jobs() -> list:
             "plist": p,
             "root": root_of(target) if target else "(none)",
             "loaded": label in live,
-            "last_status": decode_status(live.get(label)) if label in live else "not loaded",
+            "last_status": live[label] if label in live else "not loaded",
             "interval_s": pl.get("StartInterval") or ("calendar" if pl.get("StartCalendarInterval") else None),
             "coupling": coupling_of(target + " " + label),
             "parse_error": parse_error,
