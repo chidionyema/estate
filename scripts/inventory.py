@@ -285,6 +285,10 @@ def discover_guards() -> list:
             continue
         if not re.search(r"guard|gate|fence|hook", fn):
             continue
+        # crew#474: a test of a guard is not a guard. It never fires as a hook, so it sat
+        # BLIND on the showcase for ever (10 rows on 2026-08-27).
+        if fn.startswith("test_"):
+            continue
         p = os.path.join(sd, fn)
         rows.append({"kind": "guard", "id": fn, "path": p, "root": root_of(p),
                      "symlink_to": None, "coupling": coupling_of(p)})
