@@ -113,6 +113,19 @@ def job_status(pid: str, raw) -> str:
     return decode_status(raw)
 
 
+#: crew#478: com.valvesoftware.steamclean (exit 78) and com.adobe.ccxprocess (not loaded) were
+#: GAP rows on the estate showcase. Neither is ours. A launchd job is a vendor agent when its
+#: label is outside every estate namespace AND its executable is outside every estate root;
+#: it is declined the way archived repos are, so it never inflates the catalogue or the grade.
+ESTATE_LABEL_PREFIXES = ("ai.", "com.estate.", "com.founder.", "com.chidionyema.",
+                         "com.prospector", "homebrew.")
+
+
+def is_vendor_job(label: str, target: str) -> bool:
+    ours = label.startswith(ESTATE_LABEL_PREFIXES)
+    return not ours and root_of(target) in ("(outside)", "(none)")
+
+
 # ------------------------------------------------------------------ discovery
 
 def discover_jobs() -> list:
@@ -151,6 +164,8 @@ def discover_jobs() -> list:
                 target = a
                 if not a.endswith(("python3", "python", "bash", "sh", "zsh", "node")):
                     break
+        if is_vendor_job(label, target):
+            continue
         rows.append({
             "kind": "scheduled_job",
             "id": label,
