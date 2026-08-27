@@ -29,6 +29,27 @@ if ! git rev-parse --verify --quiet "$base" >/dev/null; then
   exit 0
 fi
 
+# crew#505, 2026-08-27: the range comes from the LOCAL origin/main. A stale one made this gate
+# walk 13,908 commits (one git show each) and the push hung past five minutes, twice, with no
+# output, and the ALLOW_BRANCH_RECREATE escape was only read after the walk. So: a range that
+# no push of features could plausibly carry is refreshed once and then refused loudly, before
+# a single commit is opened. The escape is honoured here, where it can still save the time.
+max_range="${LAW32_MAX_RANGE:-500}"
+count="$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"
+if [ "$count" -gt "$max_range" ]; then
+  if [ "${ALLOW_BRANCH_RECREATE:-}" = "1" ]; then exit 0; fi
+  remote_name="${base%%/*}"
+  branch_name="${base#*/}"
+  timeout 30 git fetch --quiet "$remote_name" "$branch_name" 2>/dev/null || true
+  count="$(git rev-list --count "$base"..HEAD 2>/dev/null || echo 0)"
+  if [ "$count" -gt "$max_range" ]; then
+    echo "LAW 32 gate: $base..HEAD is $count commits. That is a lineage switch or a stale $base," >&2
+    echo "not a push of features, and this gate will not open $count commits one by one." >&2
+    echo "Refresh:  git fetch $remote_name $branch_name   then push again." >&2
+    echo "Lineage switch on purpose:  ALLOW_BRANCH_RECREATE=1 git push ..." >&2
+    exit 1
+  fi
+fi
 feats="$(git log --format='%H %s' "$base"..HEAD 2>/dev/null | grep -E '^[0-9a-f]+ feat(\(|:)' || true)"
 [ -n "$feats" ] || exit 0
 
