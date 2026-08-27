@@ -100,6 +100,32 @@ def decode_status(raw) -> str:
     return "signal %d" % s
 
 
+def job_status(pid: str, raw) -> str:
+    """A job with a live PID is running; its wait status is the PREVIOUS run's.
+
+    crew#478, 2026-08-27: ai.architect.gateway and com.chidionyema.maestro are KeepAlive
+    daemons that were writing logs at the moment the showcase graded them GAP on
+    'signal 1', the exit of an instance launchd had already restarted. launchctl list
+    prints PID first and '-' when nothing is running; the status column is history.
+    """
+    if pid not in ("-", "", None):
+        return "running"
+    return decode_status(raw)
+
+
+#: crew#478: com.valvesoftware.steamclean (exit 78) and com.adobe.ccxprocess (not loaded) were
+#: GAP rows on the estate showcase. Neither is ours. A launchd job is a vendor agent when its
+#: label is outside every estate namespace AND its executable is outside every estate root;
+#: it is declined the way archived repos are, so it never inflates the catalogue or the grade.
+ESTATE_LABEL_PREFIXES = ("ai.", "com.estate.", "com.founder.", "com.chidionyema.",
+                         "com.prospector", "homebrew.")
+
+
+def is_vendor_job(label: str, target: str) -> bool:
+    ours = label.startswith(ESTATE_LABEL_PREFIXES)
+    return not ours and root_of(target) in ("(outside)", "(none)")
+
+
 # ------------------------------------------------------------------ discovery
 
 def discover_jobs() -> list:
@@ -108,7 +134,7 @@ def discover_jobs() -> list:
     for line in sh(["/bin/launchctl", "list"]).splitlines()[1:]:
         parts = line.split("\t")
         if len(parts) == 3:
-            live[parts[2]] = parts[1]
+            live[parts[2]] = job_status(parts[0], parts[1])
 
     rows = []
     d = os.path.join(HOME, "Library", "LaunchAgents")
@@ -138,6 +164,8 @@ def discover_jobs() -> list:
                 target = a
                 if not a.endswith(("python3", "python", "bash", "sh", "zsh", "node")):
                     break
+        if is_vendor_job(label, target):
+            continue
         rows.append({
             "kind": "scheduled_job",
             "id": label,
@@ -145,7 +173,7 @@ def discover_jobs() -> list:
             "plist": p,
             "root": root_of(target) if target else "(none)",
             "loaded": label in live,
-            "last_status": decode_status(live.get(label)) if label in live else "not loaded",
+            "last_status": live[label] if label in live else "not loaded",
             "interval_s": pl.get("StartInterval") or ("calendar" if pl.get("StartCalendarInterval") else None),
             "coupling": coupling_of(target + " " + label),
             "parse_error": parse_error,
@@ -260,7 +288,41 @@ def discover_guards() -> list:
         p = os.path.join(sd, fn)
         rows.append({"kind": "guard", "id": fn, "path": p, "root": root_of(p),
                      "symlink_to": None, "coupling": coupling_of(p)})
+    seen = guard_outcomes()
+    for r in rows:
+        r.update(seen.get(r["id"], {}))
     return rows
+
+
+def guard_outcomes(path: str = os.path.join(HOME, ".claude", "state", "hook-outcomes.jsonl"),
+                   window_hours: int = 24, now: float | None = None) -> dict:
+    """crew#474: 46 guards were BLIND on the estate showcase ('never observed') while
+    hook-run.py (claude-guards, crew#391) was writing every run of them to this ledger.
+    Per hook, inside the window: how often it fired, how often it refused, and the last
+    exit. last_status is 'clean' when the last exit was 0 (passed) or 2 (refused, which is
+    a guard doing its job under LAW 38); any other exit is the guard itself failing.
+    A guard absent from the window carries nothing and stays BLIND, honestly.
+    """
+    now = now or time.time()
+    out = {}
+    if not os.path.exists(path):
+        return out
+    cutoff = now - window_hours * 3600
+    for line in open(path, errors="ignore"):
+        try:
+            r = json.loads(line)
+            ts = time.mktime(time.strptime(r["at"], "%Y-%m-%dT%H:%M:%SZ")) - time.timezone
+        except Exception:
+            continue
+        if ts < cutoff or not r.get("hook"):
+            continue
+        g = out.setdefault(r["hook"], {"fired_24h": 0, "refused_24h": 0, "last_exit": None})
+        g["fired_24h"] += 1
+        g["refused_24h"] += 1 if r.get("refused") else 0
+        g["last_exit"] = r.get("exit")
+    for g in out.values():
+        g["last_status"] = "clean" if g["last_exit"] in (0, 2) else "exit %s" % g["last_exit"]
+    return out
 
 
 #: Directories holding one append-only file per project rather than one file overall. Their

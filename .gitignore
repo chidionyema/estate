@@ -23,3 +23,5 @@ scripts/**/__pycache__/
 !launchagents/
 !launchagents/**
 state/inventory.json
+!tests/
+!tests/*.py
