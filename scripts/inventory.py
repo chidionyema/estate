@@ -903,6 +903,8 @@ def _finding_keys(inv: dict) -> dict:
 # state/inventory/latest.json, read back after the write (LAW 15) so "rclone said ok" is not
 # the only angle. A cluster reader takes the object from here; the file stays for the Mac.
 BUCKET_KEY = "state/inventory/latest.json"
+FEED_KEY = "state/feed/latest.md"          # the session handoffs estate-next reads (crew#516 CP3)
+FEED = os.environ.get("ESTATE_FEED") or os.path.join(HOME, ".estate", "feed.md")
 ENVFILES = (os.path.join(HOME, ".config", "estate", "estate.env"),
             os.path.join(HOME, ".hermes", ".env"))
 
@@ -940,8 +942,15 @@ def bucket_env(envfiles=ENVFILES, environ=None) -> dict:
     }
 
 
+def _same_run(back: bytes, path: str, key: str) -> bool:
+    """A JSON object is this run when its `at` matches; a text object when the bytes match."""
+    if key.endswith(".json"):
+        return json.loads(back).get("at") == json.load(open(path)).get("at")
+    return back == open(path, "rb").read()
+
+
 def publish(path: str, env: dict | None = None, key: str = BUCKET_KEY) -> str:
-    """Copy the inventory file to the bucket and read it back. Returns the object path on
+    """Copy a state file to the bucket and read it back. Returns the object path on
     success and "" on any failure; the reason is printed, never raised, because the founder
     leg after this one still has to run."""
     env = bucket_env() if env is None else env
@@ -959,7 +968,7 @@ def publish(path: str, env: dict | None = None, key: str = BUCKET_KEY) -> str:
         print("  bucket: NOT WRITTEN (%s)" % exc)
         return ""
     try:
-        if json.loads(back).get("at") != json.load(open(path)).get("at"):
+        if not _same_run(back, path, key):
             print("  bucket: readback differs from %s, the object is not this run" % path)
             return ""
     except Exception as exc:                                  # noqa: BLE001
@@ -1002,6 +1011,12 @@ def deliver(inv: dict, prev: dict) -> int:
     # Leg two: the bucket, every run. This is the copy a reader off the Mac gets (crew#516 CP3);
     # a missed write is the outage for that reader, so it is the exit code, after the founder leg.
     bucket_ok = bool(publish(OUT))
+    # The feed rides the same road: without it the cloud render of docs/NEXT.md is BLIND on
+    # every lane (idp run 33099170685 lost 123 lines). No feed on this machine is a named gap.
+    if os.path.exists(FEED):
+        bucket_ok = bool(publish(FEED, key=FEED_KEY)) and bucket_ok
+    else:
+        print("  bucket: feed not published, %s is not on this machine" % FEED)
 
     if not appeared and not gone:
         print("  founder: nothing pushed, no finding changed since %s" % (prev.get("at") or "never"))

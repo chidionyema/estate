@@ -84,3 +84,20 @@ def test_incident_crew516_no_keys_means_no_call_and_a_named_gap(tmp_path, capsys
     assert env["BUCKET"] == "other" and env["RCLONE_S3_ACCESS_KEY_ID"] == "k"
     assert inv.publish(str(tmp_path / "x.json"), env={}) == ""
     assert "no R2_* keys" in capsys.readouterr().out
+
+
+def test_incident_crew516_the_feed_rides_the_same_road_and_is_compared_by_bytes(tmp_path, capsys):
+    """idp run 33099170685: the cloud render lost 123 lines of docs/NEXT.md because the feed
+    lived only on the Mac. The feed is a text object: read back and compared byte for byte."""
+    bindir, log, _ = _fake_rclone(tmp_path, HONEST)
+    feed = tmp_path / "feed.md"
+    feed.write_text("## 2026-08-27T17:45Z · 78caaa17 · code\n🟡 Active: crew#516\n")
+    assert inv.publish(str(feed), env=_env(bindir), key=inv.FEED_KEY) == ":s3:prospector-packs/state/feed/latest.md"
+    assert "state/feed/latest.md" in log.read_text()
+    # the other way: a stale copy in the bucket is not this run
+    (tmp_path / "b").mkdir()
+    bindir2, _, _ = _fake_rclone(tmp_path / "b", STALE)
+    assert inv.publish(str(feed), env=_env(bindir2), key=inv.FEED_KEY) == ""
+    assert "readback differs" in capsys.readouterr().out
+    assert inv.FEED_KEY == "state/feed/latest.md"
+    assert not inv.FEED.startswith("/Users/") or inv.FEED.startswith(inv.HOME)   # HOME-relative, LAW 46
