@@ -895,6 +895,80 @@ def _finding_keys(inv: dict) -> dict:
     return out
 
 
+# crew#516 CP3, 2026-08-27. The inventory was the first Mac-local state everything else hung
+# off: catalog-render, estate-lander and the datamap all read ~/.estate/state/inventory.json,
+# so none of them could leave the Mac (idp#431 graded 0 of 43 schedule rows movable). The Mac
+# already writes durably to the estate bucket every two hours (estate_bundle_push.sh, rclone,
+# keys from ~/.config/estate/estate.env), so the inventory takes the same road: one object at
+# state/inventory/latest.json, read back after the write (LAW 15) so "rclone said ok" is not
+# the only angle. A cluster reader takes the object from here; the file stays for the Mac.
+BUCKET_KEY = "state/inventory/latest.json"
+ENVFILES = (os.path.join(HOME, ".config", "estate", "estate.env"),
+            os.path.join(HOME, ".hermes", ".env"))
+
+
+def bucket_env(envfiles=ENVFILES, environ=None) -> dict:
+    """The rclone environment for the estate bucket, the same names and the same file the
+    bundle push reads. Values never reach argv. Returns {} when no key is available, and the
+    caller says so instead of guessing."""
+    environ = os.environ if environ is None else environ
+    vals = {}
+    for f in envfiles:
+        if not os.path.isfile(f):
+            continue
+        for line in open(f):
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            k, v = line.split("=", 1)
+            vals.setdefault(k.strip(), v.strip().strip("'\""))
+        break
+    get = lambda k, d="": environ.get(k) or vals.get(k) or d  # noqa: E731
+    acct, key, sec = get("R2_ACCOUNT_ID"), get("R2_ACCESS_KEY_ID"), get("R2_SECRET_ACCESS_KEY")
+    if not (acct and key and sec):
+        return {}
+    return {
+        "PATH": environ.get("PATH", "") + ":/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin",
+        "RCLONE_CONFIG": "/dev/null",
+        "RCLONE_S3_PROVIDER": "Other",
+        "RCLONE_S3_REGION": "auto",
+        "RCLONE_S3_FORCE_PATH_STYLE": "true",
+        "RCLONE_S3_ENDPOINT": "https://%s.r2.cloudflarestorage.com" % acct,
+        "RCLONE_S3_ACCESS_KEY_ID": key,
+        "RCLONE_S3_SECRET_ACCESS_KEY": sec,
+        "BUCKET": get("R2_BUCKET", "prospector-packs"),
+    }
+
+
+def publish(path: str, env: dict | None = None, key: str = BUCKET_KEY) -> str:
+    """Copy the inventory file to the bucket and read it back. Returns the object path on
+    success and "" on any failure; the reason is printed, never raised, because the founder
+    leg after this one still has to run."""
+    env = bucket_env() if env is None else env
+    if not env:
+        print("  bucket: NOT WRITTEN (no R2_* keys in the environment or %s)" % ENVFILES[0])
+        return ""
+    remote = ":s3:%s/%s" % (env["BUCKET"], key)
+    run_env = {k: v for k, v in env.items() if k != "BUCKET"}
+    try:
+        subprocess.run(["rclone", "copyto", path, remote, "--s3-no-check-bucket"],
+                       env=run_env, check=True, capture_output=True, timeout=60)
+        back = subprocess.run(["rclone", "cat", remote], env=run_env, check=True,
+                              capture_output=True, timeout=60).stdout
+    except Exception as exc:                                  # noqa: BLE001
+        print("  bucket: NOT WRITTEN (%s)" % exc)
+        return ""
+    try:
+        if json.loads(back).get("at") != json.load(open(path)).get("at"):
+            print("  bucket: readback differs from %s, the object is not this run" % path)
+            return ""
+    except Exception as exc:                                  # noqa: BLE001
+        print("  bucket: readback unreadable (%s)" % exc)
+        return ""
+    print("  bucket: written %s (read back, same run)" % remote)
+    return remote
+
+
 def deliver(inv: dict, prev: dict) -> int:
     now, was = _finding_keys(inv), _finding_keys(prev)
     headline = "  ".join(
@@ -925,10 +999,14 @@ def deliver(inv: dict, prev: dict) -> int:
         print("  board: NOT WRITTEN (%s)" % exc)
     print("  board: %s" % ("written" if board_ok else "failed"))
 
+    # Leg two: the bucket, every run. This is the copy a reader off the Mac gets (crew#516 CP3);
+    # a missed write is the outage for that reader, so it is the exit code, after the founder leg.
+    bucket_ok = bool(publish(OUT))
+
     if not appeared and not gone:
         print("  founder: nothing pushed, no finding changed since %s" % (prev.get("at") or "never"))
         print("  state: %d finding(s) standing -- %s" % (total, headline))
-        return 0
+        return 0 if bucket_ok else 1
 
     lines = ["\U0001f5c2 Estate inventory changed", "", "%d assets, %s" % (len(inv.get("rows", [])), headline), ""]
     for kind, items in appeared.items():
@@ -953,7 +1031,7 @@ def deliver(inv: dict, prev: dict) -> int:
               "that is the LAW 28 failure and it is not a warning, it is the outage." % (mid,))
         return 1
     print("  founder: delivered, telegram message id %s" % mid)
-    return 0
+    return 0 if bucket_ok else 1
 
 
 def main() -> int:
