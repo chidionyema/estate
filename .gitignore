@@ -12,6 +12,8 @@
 !docs/**
 !scripts/
 !scripts/**
+!tests/
+!tests/**
 # Build products are a copy of something already tracked (LAW 24), and a committed
 # __pycache__ is how a stale .pyc outlives the source it was built from.
 scripts/**/__pycache__/

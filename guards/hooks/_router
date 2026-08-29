@@ -5,6 +5,11 @@
 # in every repo without a .githooks/pre-push refused, and no commit could be
 # made anywhere on this machine.
 set -euo pipefail
+on_exit() {
+	local e=$?
+	[ "$e" -eq 0 ] || echo "_router: hook ${name:-?} exit $e" >&2
+}
+trap on_exit EXIT
 name="$(basename "$0")"
 
 # crew#474 (2026-08-27): every git hook this router dispatches was BLIND on the estate
@@ -13,53 +18,53 @@ name="$(basename "$0")"
 # a guard (LAW 28). Same ledger, same row shape, same reader (inventory guard_outcomes).
 LEDGER="${HOOK_OUTCOMES:-$HOME/.claude/state/hook-outcomes.jsonl}"
 record() {
-  local rc="$1" refused=false
-  [ "$rc" != 0 ] && refused=true
-  mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || return 0
-  printf '{"at":"%s","event":"git-hook","hook":"%s","session":"","exit":%s,"ms":0,"refused":%s}\n' \
-    "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$rc" "$refused" >> "$LEDGER" 2>/dev/null || true
+	local rc="$1" refused=false
+	[ "$rc" != 0 ] && refused=true
+	mkdir -p "$(dirname "$LEDGER")" 2>/dev/null || return 0
+	printf '{"at":"%s","event":"git-hook","hook":"%s","session":"","exit":%s,"ms":0,"refused":%s}\n' \
+		"$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$name" "$rc" "$refused" >>"$LEDGER" 2>/dev/null || true
 }
 # Run the chosen hook, record its exit under the name this router was invoked as, and
 # exit with that same code. Replaces exec, which left nothing behind to record.
 run() {
-  set +e
-  "$@"
-  local rc=$?
-  set -e
-  record "$rc"
-  exit "$rc"
+	set +e
+	"$@"
+	local rc=$?
+	set -e
+	record "$rc"
+	exit "$rc"
 }
 top="$(git rev-parse --show-toplevel)"
 hook="$top/.githooks/$name"
 
 if [ -x "$hook" ]; then
-  run "$hook" "$@"
+	run "$hook" "$@"
 fi
 
 # The repo does not carry this hook. Only pre-push refuses on absence, because
 # that is the gate LAW 32 hangs off; every other hook is optional by design and
 # blocking on it stops work for no stated reason.
 if [ "$name" = "pre-push" ]; then
-  # hooks/ is in this list because claude-guards keeps its own pre-push there,
-  # and claude-guards is the repo that ships the LAW 32 gate. Without that entry
-  # the one repo whose job is enforcing the gate was the one repo the gate could
-  # not run in: every push from it was refused, with an install instruction
-  # naming a directory it does not use.
-  for d in scripts/hooks hooks; do
-    if [ -x "$top/$d/pre-push" ]; then
-      run "$top/$d/pre-push" "$@"
-    fi
-  done
-  # No repository hook. Run the shared LAW 32 gate rather than refusing.
-  #
-  # Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
-  # repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
-  # the repository that holds this router. An install instruction printed to a machine that
-  # cannot push the installation is an outage wearing a fence's clothes, and the comments above
-  # already say twice why that is the wrong trade. The law is still enforced; it is now
-  # enforced by something every repository inherits instead of something each one must
-  # remember to install.
-  run "$(dirname "$0")/law32-default" "$@"
+	# hooks/ is in this list because claude-guards keeps its own pre-push there,
+	# and claude-guards is the repo that ships the LAW 32 gate. Without that entry
+	# the one repo whose job is enforcing the gate was the one repo the gate could
+	# not run in: every push from it was refused, with an install instruction
+	# naming a directory it does not use.
+	for d in scripts/hooks hooks; do
+		if [ -x "$top/$d/pre-push" ]; then
+			run "$top/$d/pre-push" "$@"
+		fi
+	done
+	# No repository hook. Run the shared LAW 32 gate rather than refusing.
+	#
+	# Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
+	# repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
+	# the repository that holds this router. An install instruction printed to a machine that
+	# cannot push the installation is an outage wearing a fence's clothes, and the comments above
+	# already say twice why that is the wrong trade. The law is still enforced; it is now
+	# enforced by something every repository inherits instead of something each one must
+	# remember to install.
+	run "$(dirname "$0")/law32-default" "$@"
 fi
 
 # pre-commit gets a shared default too, for the same reason pre-push does: a gate
@@ -67,10 +72,19 @@ fi
 # It refuses a commit that stages a config file the service reading it cannot parse
 # (LAW 45, 2026-08-24). It fails open on a missing python3 or a missing checker.
 if [ "$name" = "pre-commit" ]; then
-  shared="$(dirname "$0")/config-syntax-default"
-  if [ -x "$shared" ]; then
-    run "$shared" "$@"
-  fi
+	# Two defaults, both must pass: config syntax, then the shell standard (crew#620).
+	for shared in "$(dirname "$0")/config-syntax-default" "$(dirname "$0")/shell-strict-default"; do
+		if [ -x "$shared" ]; then
+			set +e
+			"$shared" "$@"
+			rc=$?
+			set -e
+			if [ "$rc" != 0 ]; then
+				record "$rc"
+				exit "$rc"
+			fi
+		fi
+	done
 fi
 record 0
 exit 0
