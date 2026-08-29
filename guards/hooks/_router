@@ -38,7 +38,20 @@ top="$(git rev-parse --show-toplevel)"
 hook="$top/.githooks/$name"
 
 if [ -x "$hook" ]; then
-	run "$hook" "$@"
+	# pre-commit: the repo's own hook runs first, then the shared defaults below still run
+	# (crew#620: idp and crew carry their own pre-commit, and the shell gate must not be
+	# skippable by having one). Every other hook: the repo's own hook is the whole answer.
+	if [ "$name" != "pre-commit" ]; then
+		run "$hook" "$@"
+	fi
+	set +e
+	"$hook" "$@"
+	rc=$?
+	set -e
+	if [ "$rc" != 0 ]; then
+		record "$rc"
+		exit "$rc"
+	fi
 fi
 
 # The repo does not carry this hook. Only pre-push refuses on absence, because

@@ -53,3 +53,13 @@ try() { git -C "$R" add -A && git -C "$R" commit -q -m t; }
   good bin-tool; sed -i '' '/^trap/d' "$R/bin-tool"; run try
   [ "$status" -ne 0 ]; [[ "$output" == *"no trap"* ]]
 }
+@test "a repo with its own pre-commit hook is still graded by the shared gate" {
+  mkdir -p "$R/.githooks"; printf '#!/usr/bin/env bash\nexit 0\n' > "$R/.githooks/pre-commit"; chmod +x "$R/.githooks/pre-commit"
+  good bad.sh; sed -i '' '/^trap/d' "$R/bad.sh"; run try
+  [ "$status" -ne 0 ]; [[ "$output" == *"no trap"* ]]
+}
+@test "a repo hook that refuses wins before the shared gate" {
+  mkdir -p "$R/.githooks"; printf '#!/usr/bin/env bash\necho REPO-HOOK-NO >&2; exit 3\n' > "$R/.githooks/pre-commit"; chmod +x "$R/.githooks/pre-commit"
+  good ok.sh; run try
+  [ "$status" -ne 0 ]; [[ "$output" == *"REPO-HOOK-NO"* ]]
+}
