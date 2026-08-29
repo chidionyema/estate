@@ -9,6 +9,9 @@ Every staged .py file must:
   3. (note only) under bin/ or scripts/: subprocess.run(...) carries check=True
   4. existing files ratchet: a regression is refused, a pre-existing gap is noted (LAW 38)
 Fails CLOSED when ruff is missing. Tests: ~/.estate/tests/test_python_strict.py
+
+CI runs the same file: PYTHON_STRICT_RANGE=<base>...<head> grades the commits in that range
+instead of the index, so the hook and the CI job can never disagree (one copy, LAW 43).
 """
 
 from __future__ import annotations
@@ -39,13 +42,20 @@ def git(*args: str) -> str:
     ).stdout
 
 
+RANGE = os.environ.get("PYTHON_STRICT_RANGE")  # e.g. origin/main...HEAD in CI
+BASE = RANGE.split("...")[0].split("..")[0] if RANGE else "HEAD"
+
+
+def diff(*flt: str) -> list[str]:
+    args = ["diff", *flt] if RANGE is None else ["diff", RANGE, *flt]
+    if RANGE is None:
+        args.insert(1, "--cached")
+    return git(*args, "--name-only").split("\n")
+
+
 def staged_python() -> tuple[list[str], set[str]]:
-    staged = [
-        f
-        for f in git("diff", "--cached", "--name-only", "--diff-filter=ACM").split("\n")
-        if f.endswith(".py")
-    ]
-    added = set(git("diff", "--cached", "--name-only", "--diff-filter=A").split("\n"))
+    staged = [f for f in diff("--diff-filter=ACM") if f.endswith(".py")]
+    added = set(diff("--diff-filter=A"))
     return [f for f in staged if os.path.isfile(f)], added
 
 
@@ -84,9 +94,9 @@ def ruff_format(path: str) -> bool:
 
 
 def head_copy(path: str) -> str | None:
-    """Path to a temp copy of HEAD's version of the file, or None when it is not on HEAD."""
+    """Temp copy of the base version of the file (HEAD, or the range base in CI), or None when new."""
     proc = subprocess.run(
-        ["git", "show", f"HEAD:{path}"], check=False, capture_output=True, text=True
+        ["git", "show", f"{BASE}:{path}"], check=False, capture_output=True, text=True
     )
     if proc.returncode != 0:
         return None
