@@ -35,6 +35,42 @@ run() {
 	exit "$rc"
 }
 top="$(git rev-parse --show-toplevel)"
+
+# A repository under the operating system's temp directory, reached only because ~/.gitconfig
+# points core.hooksPath here, is a test fixture and not the estate. That global setting reaches
+# EVERY repository on this machine, including the throwaway ones tests build in pytest's tmp_path
+# and delete when they finish, and python-strict-default graded their two-line stand-ins as if
+# they were estate source. Measured 2026-08-29 in idp: all three tests in
+# tests/test_incident_spec_gate_touched_not_executed.py died inside their own fixture, before
+# asserting anything, because `x=1` fails ruff format and a bare `scenarios("...")` fails ruff
+# F821. Six more idp tests build a scratch repo the same way. A fence that refuses correct work
+# is an outage (LAW 38), and the correct work here is the test of another guard.
+#
+# All three conditions are load-bearing, because this repository's OWN guard tests build scratch
+# repos under the temp directory and need the guards to fire in them:
+#   - the checkout is under the temp directory      -- the operating system deletes it, so nothing
+#                                                      load-bearing can live there
+#   - no repository-local core.hooksPath            -- tests/test_python_strict.py sets one, which
+#                                                      is a fixture asking to be graded on purpose
+#   - this file is the one the GLOBAL setting names -- crew474's test runs a copy of this router
+#                                                      from its own temp directory, and that copy
+#                                                      is being tested, not leaking in
+# A skip on any weaker predicate turns nine of this repository's own tests red; that is measured,
+# not argued, and tests/test_incident_crew623_hooks_skip_a_throwaway_repo.py holds the line.
+tmp_root="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P || echo /tmp)"
+tmp_root="${tmp_root%/}"
+here="$(cd "$(dirname "$0")" && pwd -P)"
+global_hooks="$(git config --global --get core.hooksPath || true)"
+[ -n "$global_hooks" ] && global_hooks="$(cd "$global_hooks" 2>/dev/null && pwd -P || echo "")"
+local_hooks="$(git config --local --get core.hooksPath || true)"
+if [ -z "$local_hooks" ] && [ -n "$global_hooks" ] && [ "$here" = "$global_hooks" ]; then
+	case "$(cd "$top" && pwd -P)/" in
+	"$tmp_root"/* | /tmp/* | /private/tmp/* | /var/folders/*)
+		exit 0
+		;;
+	esac
+fi
+
 hook="$top/.githooks/$name"
 
 if [ -x "$hook" ]; then
