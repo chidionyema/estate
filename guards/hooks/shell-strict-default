@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# Shared pre-commit default: refuse a commit that stages a shell file breaking the
+# estate's shell standard (founder, 2026-08-29, crew#620: "we need to take bash
+# seriously as any coding tool ... with immediate effect ... all agents must use
+# these else they cannot work on the estate").
+#
+# A staged .sh/.bash file, or any file whose first line is a sh/bash shebang, must:
+#   1. pass ShellCheck at -S warning
+#   2. be shfmt-formatted (shfmt -d prints nothing)
+#   3. set -euo pipefail (or set -eu + set -o pipefail)
+#   4. install a trap
+#   5. if it is NEW, be at most 100 lines; longer goes to Python (standard row 6)
+# Fails CLOSED: a missing shellcheck or shfmt refuses the commit and prints the
+# install line, because a gate that fails open is the cowboy road this replaces.
+# Tests: ~/.estate/tests/shell-strict.bats
+set -euo pipefail
+on_exit() {
+	local e=$?
+	[ "$e" -eq 0 ] || echo "shell-strict-default: exit $e" >&2
+}
+trap on_exit EXIT
+PATH="$PATH:$HOME/go/bin:/usr/local/bin:/opt/homebrew/bin"
+MAX_NEW_LINES=${SHELL_STRICT_MAX_NEW_LINES:-100}
+
+is_shell() { # <path> -> 0 when the file is a shell script
+	case "$1" in *.sh | *.bash) return 0 ;; esac
+	head -n1 -- "$1" 2>/dev/null | grep -Eq '^#!.*\b(ba)?sh\b'
+}
+mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z | tr '\0' '\n')
+mapfile -t added < <(git diff --cached --name-only --diff-filter=A -z | tr '\0' '\n')
+files=()
+for f in "${staged[@]}"; do [ -f "$f" ] && is_shell "$f" && files+=("$f"); done
+[ "${#files[@]}" -gt 0 ] || exit 0
+
+for tool in shellcheck shfmt; do
+	command -v "$tool" >/dev/null 2>&1 && continue
+	echo "REFUSED: $tool is not installed and a shell file is staged. Install: brew install shellcheck shfmt" >&2
+	exit 1
+done
+
+bad=0
+say() {
+	echo "shell-strict: $1: $2" >&2
+	bad=1
+}
+for f in "${files[@]}"; do
+	shellcheck -S warning -- "$f" >&2 || say "$f" "ShellCheck (-S warning) refuses it; fix every line above"
+	d=$(shfmt -d -- "$f" 2>&1) || {
+		printf '%s\n' "$d" >&2
+		say "$f" "not shfmt-formatted; run: shfmt -w $f"
+	}
+	grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u[a-zA-Z]*o[[:space:]]+pipefail' "$f" ||
+		{ grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u' "$f" && grep -Eq 'set[[:space:]]+-o[[:space:]]+pipefail' "$f"; } ||
+		say "$f" "no 'set -euo pipefail' (standard row 2)"
+	grep -Eq '^[[:space:]]*trap[[:space:]]' "$f" || say "$f" "no trap (standard row 2)"
+	for a in "${added[@]}"; do
+		[ "$a" = "$f" ] || continue
+		n=$(wc -l <"$f")
+		[ "$n" -le "$MAX_NEW_LINES" ] || say "$f" "new shell file is $n lines, over $MAX_NEW_LINES: write it in Python (standard row 6)"
+	done
+done
+[ "$bad" -eq 0 ] && exit 0
+cat >&2 <<'EOF2'
+
+REFUSED: a staged shell file breaks the estate shell standard (crew#620).
+ShellCheck clean, shfmt formatted, set -euo pipefail, a trap, new files under 100 lines.
+EOF2
+exit 1
