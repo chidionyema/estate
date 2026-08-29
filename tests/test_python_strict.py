@@ -129,3 +129,35 @@ def test_repo_with_its_own_pre_commit_hook_is_still_graded(repo: Path) -> None:
     p = commit(repo, "bad.py", UNDEFINED)
     assert p.returncode != 0
     assert "python-strict" in p.stderr
+
+
+def test_range_mode_grades_commits_like_ci(repo: Path) -> None:
+    """CI sets PYTHON_STRICT_RANGE=base...head and runs the same file; a bad commit on a branch is refused."""
+    base = run(repo, "rev-parse", "HEAD").stdout.strip()
+    (repo / "bad.py").write_text(UNDEFINED)
+    run(repo, "add", "bad.py")
+    assert (
+        run(
+            repo, "-c", "core.hooksPath=/dev/null", "commit", "-qm", "sneaked past"
+        ).returncode
+        == 0
+    )
+    p = subprocess.run(
+        [str(GATE)],
+        cwd=repo,
+        env={**os.environ, "PYTHON_STRICT_RANGE": f"{base}...HEAD"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert p.returncode != 0
+    assert "bad.py: fails ruff check" in p.stderr
+    clean = subprocess.run(
+        [str(GATE)],
+        cwd=repo,
+        env={**os.environ, "PYTHON_STRICT_RANGE": "HEAD...HEAD"},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    assert clean.returncode == 0
