@@ -85,8 +85,8 @@ fi
 # It refuses a commit that stages a config file the service reading it cannot parse
 # (LAW 45, 2026-08-24). It fails open on a missing python3 or a missing checker.
 if [ "$name" = "pre-commit" ]; then
-	# Two defaults, both must pass: config syntax, then the shell standard (crew#620).
-	for shared in "$(dirname "$0")/config-syntax-default" "$(dirname "$0")/shell-strict-default"; do
+	# Three defaults, all must pass: config syntax, the shell standard, the Python standard (crew#620).
+	for shared in "$(dirname "$0")/config-syntax-default" "$(dirname "$0")/shell-strict-default" "$(dirname "$0")/python-strict-default"; do
 		if [ -x "$shared" ]; then
 			set +e
 			"$shared" "$@"
