@@ -43,16 +43,37 @@ say() {
 	echo "shell-strict: $1: $2" >&2
 	bad=1
 }
+# Existing files ratchet (LAW 38: a guard that refuses correct work is an outage). A file that was
+# already off-standard on HEAD is not refused for staying so inside an unrelated change; it is
+# refused for getting worse, and its retrofit is crew#620's backlog. New files meet every row.
+meets_strict() { # <file> -> 0 when the file sets -euo pipefail
+	grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u[a-zA-Z]*o[[:space:]]+pipefail' "$1" ||
+		{ grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u' "$1" && grep -Eq 'set[[:space:]]+-o[[:space:]]+pipefail' "$1"; }
+}
+meets_trap() { grep -Eq '^[[:space:]]*trap[[:space:]]' "$1"; }
+meets_fmt() { shfmt -d -- "$1" >/dev/null 2>&1; }
+ratchet() { # <file> <row-name> <check-fn>: refuse a regression, note a pre-existing gap
+	local f="$1" row="$2" fn="$3" was
+	was=$(mktemp) && git show "HEAD:$f" >"$was" 2>/dev/null || {
+		rm -f "$was"
+		return 1
+	} # not on HEAD: full rule
+	if "$fn" "$was"; then
+		rm -f "$was"
+		return 1
+	fi # HEAD met it: full rule
+	rm -f "$was"
+	echo "shell-strict: $f: ratchet, already off-standard on HEAD ($row); retrofit is crew#620, not this commit" >&2
+	return 0
+}
 for f in "${files[@]}"; do
 	shellcheck -S warning -- "$f" >&2 || say "$f" "ShellCheck (-S warning) refuses it; fix every line above"
-	d=$(shfmt -d -- "$f" 2>&1) || {
-		printf '%s\n' "$d" >&2
+	ratchet "$f" "shfmt" meets_fmt || meets_fmt "$f" || {
+		shfmt -d -- "$f" >&2 2>&1 || true
 		say "$f" "not shfmt-formatted; run: shfmt -w $f"
 	}
-	grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u[a-zA-Z]*o[[:space:]]+pipefail' "$f" ||
-		{ grep -Eq '^[[:space:]]*set[[:space:]]+-[a-zA-Z]*e[a-zA-Z]*u' "$f" && grep -Eq 'set[[:space:]]+-o[[:space:]]+pipefail' "$f"; } ||
-		say "$f" "no 'set -euo pipefail' (standard row 2)"
-	grep -Eq '^[[:space:]]*trap[[:space:]]' "$f" || say "$f" "no trap (standard row 2)"
+	ratchet "$f" "set -euo pipefail" meets_strict || meets_strict "$f" || say "$f" "no 'set -euo pipefail' (standard row 2)"
+	ratchet "$f" "trap" meets_trap || meets_trap "$f" || say "$f" "no trap (standard row 2)"
 	for a in "${added[@]}"; do
 		[ "$a" = "$f" ] || continue
 		n=$(wc -l <"$f")
