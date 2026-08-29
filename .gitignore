@@ -35,3 +35,5 @@ state/inventory.json
 !.github/workflows/*.yml
 !agents/
 !agents/**
+!bin/
+!bin/**
