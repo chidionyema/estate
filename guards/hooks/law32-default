@@ -53,13 +53,35 @@ fi
 feats="$(git log --format='%H %s' "$base"..HEAD 2>/dev/null | grep -E '^[0-9a-f]+ feat(\(|:)' || true)"
 [ -n "$feats" ] || exit 0
 
+# Where a demo and an onboarding page may live. idp moved both under Diátaxis headings on
+# 2026-08-28 (ADR 0002: a demo is a tutorial, an onboarding is a how-to) and this gate was not
+# told, so from that day every `feat:` push out of idp was refused for pages that existed --
+# measured 2026-08-29 on feat/commerce-primitive-dark, which carried the pair under the new
+# names and was told `docs/demo/the.md is missing`. A fence that correct work cannot satisfy is
+# an outage, not a fence (LAW 38), and this file's own header already says so about absence.
+# Either layout satisfies the law: what LAW 32 asks for is the two pages, not their directory.
+DEMO_DIRS="docs/demo docs/tutorials/demo"
+ONBOARDING_DIRS="docs/onboarding docs/how-to/onboarding"
+
+# The first of these paths that exists, or empty when none does.
+first_existing() {
+  for _d in $1; do
+    [ -f "$_d/$2.md" ] && { printf '%s' "$_d/$2.md"; return; }
+  done
+}
+
 # Does this pair exist and say something? Echoes the complaint, or nothing when it is fine.
 pair_problem() {
   _n="$1"; _p=""
   for _k in demo onboarding; do
-    _f="docs/$_k/$_n.md"
-    if [ ! -f "$_f" ]; then
-      _p="$_p\n  $_f is missing"
+    case "$_k" in
+      demo) _dirs="$DEMO_DIRS" ;;
+      *)    _dirs="$ONBOARDING_DIRS" ;;
+    esac
+    _f="$(first_existing "$_dirs" "$_n")"
+    if [ -z "$_f" ]; then
+      # Name every place it looked, so the complaint is actionable in either layout.
+      for _d in $_dirs; do _p="$_p\n  $_d/$_n.md is missing"; done
       continue
     fi
     _c="$(grep -v '^#' "$_f" | grep -v '^[[:space:]]*$' | tr -d '\n' | wc -c | tr -d ' ')"
@@ -83,7 +105,7 @@ pair_problem() {
 push_pairs="$(git log --format='%H' "$base"..HEAD 2>/dev/null \
   | while IFS= read -r _s; do
       git show --name-only --format= "$_s" 2>/dev/null \
-        | sed -n 's#^docs/demo/\(.*\)\.md$#\1#p'
+        | sed -n -e 's#^docs/demo/\(.*\)\.md$#\1#p' -e 's#^docs/tutorials/demo/\(.*\)\.md$#\1#p'
     done | sort -u)"
 claimed=""
 
@@ -95,7 +117,7 @@ while IFS= read -r line; do
   # Pairs added by THIS commit, not by the push. Scoping the fallback to the push let one
   # well-documented feature excuse every other feat: commit beside it -- measured 2026-08-23,
   # when two controls that must fail both passed. A feature's docs are the ones it brought.
-  added="$(git show --name-only --format= "$sha" 2>/dev/null | sed -n 's#^docs/demo/\(.*\)\.md$#\1#p')"
+  added="$(git show --name-only --format= "$sha" 2>/dev/null | sed -n -e 's#^docs/demo/\(.*\)\.md$#\1#p' -e 's#^docs/tutorials/demo/\(.*\)\.md$#\1#p')"
   # feat(name): thing  ->  name
   # feat: thing        ->  first word of the description, lowercased
   scope="$(printf '%s' "$subject" | sed -n 's/^feat(\([^)]*\)).*/\1/p')"
@@ -140,8 +162,10 @@ done <<< "$feats"
 echo "pre-push blocked by LAW 32: a feature ships with a demo and an onboarding."
 printf "%b\n" "$missing"
 echo ""
-echo "  docs/demo/<name>.md        what he sees when it runs, real output, command above it"
-echo "  docs/onboarding/<name>.md  what it is for, what it costs, where it lives, how to stop it"
+echo "  a demo        what he sees when it runs, real output, command above it"
+echo "                docs/demo/<name>.md, or docs/tutorials/demo/<name>.md under Diataxis"
+echo "  an onboarding what it is for, what it costs, where it lives, how to stop it"
+echo "                docs/onboarding/<name>.md, or docs/how-to/onboarding/<name>.md"
 echo ""
 echo "Or, for a one-off:  ALLOW_BRANCH_RECREATE=1 git push ..."
 [ "${ALLOW_BRANCH_RECREATE:-}" = "1" ] || exit 1
