@@ -1,0 +1,55 @@
+#!/usr/bin/env python3
+"""crew#568 Phase 6: the laptop exports no vendor model key.
+
+Starts a fresh login shell (nothing inherited from the caller) and reads its
+environment. Any `*_API_KEY` other than LITELLM_API_KEY is a vendor key the
+router already fronts; naming it is the refusal. Values are never printed.
+Exit 0 clean, 1 when a vendor key is exported, 2 when the shell cannot be read.
+"""
+
+from __future__ import annotations
+
+import os
+import subprocess
+import sys
+
+ALLOWED = {"LITELLM_API_KEY"}
+
+
+def exported_keys(home: str) -> list[str]:
+    proc = subprocess.run(
+        ["env", "-i", f"HOME={home}", "PATH=/usr/bin:/bin", "zsh", "-lic", "env"],
+        check=False,
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    if proc.returncode != 0 and not proc.stdout:
+        raise RuntimeError(proc.stderr.strip()[:200])
+    names = [line.split("=", 1)[0] for line in proc.stdout.splitlines() if "=" in line]
+    return sorted(n for n in names if n.endswith("_API_KEY") and n not in ALLOWED)
+
+
+def main() -> int:
+    home = sys.argv[1] if len(sys.argv) > 1 else os.path.expanduser("~")
+    try:
+        bad = exported_keys(home)
+    except (RuntimeError, subprocess.TimeoutExpired) as exc:
+        print(
+            f"laptop-no-vendor-keys: cannot read the login shell: {exc}",
+            file=sys.stderr,
+        )
+        return 2
+    if bad:
+        print(
+            f"REFUSED: the login shell exports vendor model keys {', '.join(bad)}; "
+            "the router fronts every model (crew#568), remove the export",
+            file=sys.stderr,
+        )
+        return 1
+    print("ok laptop exports only the router key")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
