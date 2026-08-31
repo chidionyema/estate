@@ -57,18 +57,38 @@ top="$(git rev-parse --show-toplevel)"
 #                                                      is being tested, not leaking in
 # A skip on any weaker predicate turns nine of this repository's own tests red; that is measured,
 # not argued, and tests/test_incident_crew623_hooks_skip_a_throwaway_repo.py holds the line.
+#
+# The predicate is the repository's HOME, not the directory the work happens to sit in, and those
+# are different things for a worktree (2026-08-31, idp#1056). R57 tells every session to build in a
+# `git worktree` of a real checkout, and this harness hands each session a scratch directory under
+# /private/tmp to put it in. `git rev-parse --show-toplevel` then answers with the temp path, the
+# case below matched, and every shared guard exited 0 for the whole of that session's work: a file
+# with an undefined name and no formatting was committed to idp and only CI caught it, one push and
+# four red checks later. A `git init` fixture keeps its whole repository under the temp directory,
+# so `--git-common-dir` is under it too; a worktree's common directory is the real checkout's
+# `.git`, far outside it. That is the difference, and it is one command to ask.
 tmp_root="$(cd "${TMPDIR:-/tmp}" 2>/dev/null && pwd -P || echo /tmp)"
 tmp_root="${tmp_root%/}"
+under_tmp() {
+	case "$1/" in
+	"$tmp_root"/* | /tmp/* | /private/tmp/* | /var/folders/*) return 0 ;;
+	esac
+	return 1
+}
 here="$(cd "$(dirname "$0")" && pwd -P)"
 global_hooks="$(git config --global --get core.hooksPath || true)"
 [ -n "$global_hooks" ] && global_hooks="$(cd "$global_hooks" 2>/dev/null && pwd -P || echo "")"
 local_hooks="$(git config --local --get core.hooksPath || true)"
 if [ -z "$local_hooks" ] && [ -n "$global_hooks" ] && [ "$here" = "$global_hooks" ]; then
-	case "$(cd "$top" && pwd -P)/" in
-	"$tmp_root"/* | /tmp/* | /private/tmp/* | /var/folders/*)
-		exit 0
-		;;
+	common="$(git rev-parse --git-common-dir 2>/dev/null || echo .git)"
+	case "$common" in
+	/*) ;;
+	*) common="$top/$common" ;;
 	esac
+	common="$(cd "$common" 2>/dev/null && pwd -P || echo "$common")"
+	if under_tmp "$(cd "$top" && pwd -P)" && under_tmp "$common"; then
+		exit 0
+	fi
 fi
 
 hook="$top/.githooks/$name"
