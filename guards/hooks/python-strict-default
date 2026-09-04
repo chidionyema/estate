@@ -116,6 +116,37 @@ def main() -> int:
             file=sys.stderr,
         )
         return 1
+    # Founder, 2026-09-04: "Install a tool like ruff ... wire it to a git hook. The second the
+    # agent runs git commit, the tool instantly reformats the code before it ever reaches GitHub."
+    # Formatting is the one row of the standard a machine can settle on its own, and refusing a
+    # commit over it cost a red CI run and a second push on idp#1399. In a commit (no
+    # PYTHON_STRICT_RANGE, so not the CI copy) the file is formatted and re-staged instead. The
+    # other rows still refuse: undefined names and security findings are judgement, not layout.
+    # A file that was already off-standard at HEAD is exempt from the ratchet below, and it has to
+    # be exempt from the reformat too: rewriting a legacy file turns a one-line change into a
+    # whole-file diff that no reviewer can read, and it defeats every line-count ratchet built on
+    # top of it (claude-guards' policy/hand_rolled_policy.rego counts rule-guard.py's lines, and
+    # this reformat moved it from 1402 to 1797 on two branches on 2026-09-04). Format what is new
+    # or already clean; leave the legacy files to their retrofit ticket.
+    if not os.environ.get("PYTHON_STRICT_RANGE"):
+        legacy = set()
+        for f in files:
+            if f in added or ruff_format(f):
+                continue
+            was = head_copy(f)
+            if was is not None:
+                if not ruff_format(was):
+                    legacy.add(f)
+                os.unlink(was)
+        fixed = [f for f in files if f not in legacy and not ruff_format(f)]
+        if fixed:
+            subprocess.run(["ruff", "format", "--quiet", "--", *fixed], check=False)
+            subprocess.run(["git", "add", "--", *fixed], check=False)
+            print(
+                "python-strict: reformatted and re-staged: " + " ".join(fixed),
+                file=sys.stderr,
+            )
+
     bad = False
     for f in files:
         was = None if f in added else head_copy(f)
