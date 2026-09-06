@@ -155,5 +155,16 @@ if [ "$name" = "pre-commit" ]; then
 		fi
 	done
 fi
+
+# commit-msg gets a shared default for crew#53: a commit that names no issue is refused
+# in every repository, whichever tool wrote it. ticket-gate.py only sees Claude Code, so
+# codex and gemini (no pre-tool hook) are caught here at the commit instead. Mirrors the
+# pre-commit pattern above: the repo's own commit-msg hook (if any) already ran and passed.
+if [ "$name" = "commit-msg" ]; then
+	shared="$(dirname "$0")/ticket-default"
+	if [ -x "$shared" ]; then
+		run "$shared" "$@"
+	fi
+fi
 record 0
 exit 0
