@@ -49,6 +49,11 @@ try() { git -C "$R" add -A && git -C "$R" commit -q -m t; }
   good big.sh; for i in $(seq 1 120); do echo "echo $i" >> "$R/big.sh"; done; run try
   [ "$status" -ne 0 ]; [[ "$output" == *"write it in Python"* ]]
 }
+@test "a deliberately broken fixture under tests/fixtures is not graded" {
+  mkdir -p "$R/tests/fixtures"
+  printf '#!/usr/bin/env bash\ncd /nowhere\n' > "$R/tests/fixtures/bad.sh"
+  run try; [ "$status" -eq 0 ]
+}
 @test "a shebang file with no extension is graded" {
   good bin-tool; sed -i '' '/^trap/d' "$R/bin-tool"; run try
   [ "$status" -ne 0 ]; [[ "$output" == *"no trap"* ]]

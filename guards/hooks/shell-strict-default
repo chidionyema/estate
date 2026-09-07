@@ -26,10 +26,18 @@ is_shell() { # <path> -> 0 when the file is a shell script
 	case "$1" in *.sh | *.bash) return 0 ;; esac
 	head -n1 -- "$1" 2>/dev/null | grep -Eq '^#!.*\b(ba)?sh\b'
 }
+# A fixture under tests/fixtures/ is graded by the gate it belongs to, and half of them are
+# deliberately broken -- that is what a must-fail fixture is. Refusing one here refuses correct
+# work (LAW 38): idp's shell-lint rule could not add the unguarded-cd fixture its own gate must
+# refuse until this exemption existed (2026-09-07).
+is_fixture() {
+	case "$1" in tests/fixtures/* | */tests/fixtures/*) return 0 ;; esac
+	return 1
+}
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z | tr '\0' '\n')
 mapfile -t added < <(git diff --cached --name-only --diff-filter=A -z | tr '\0' '\n')
 files=()
-for f in "${staged[@]}"; do [ -f "$f" ] && is_shell "$f" && files+=("$f"); done
+for f in "${staged[@]}"; do [ -f "$f" ] && ! is_fixture "$f" && is_shell "$f" && files+=("$f"); done
 [ "${#files[@]}" -gt 0 ] || exit 0
 
 for tool in shellcheck shfmt; do
