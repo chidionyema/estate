@@ -68,3 +68,42 @@ try() { git -C "$R" add -A && git -C "$R" commit -q -m t; }
   good ok.sh; run try
   [ "$status" -ne 0 ]; [[ "$output" == *"REPO-HOOK-NO"* ]]
 }
+
+# 2026-09-08: the gate refused a routine catch-up from the trunk because the union commit staged
+# bin/idp-pipeverdict, 102 lines, over the new-file cap -- a file already on the trunk whose staged
+# blob was byte-identical to the parent's. A union commit authors nothing it merely carries, and
+# a guard that refuses correct work is an outage (LAW 38). These two hold the line at "carried",
+# not at "joining": a blob the union itself writes is still graded.
+
+big() { # a script that meets every row but sits over the new-file line cap
+  good "$1"; for i in $(seq 1 110); do echo "echo line $i" >> "$R/$1"; done
+}
+@test "a union that only carries an over-cap file across is not graded" {
+  # The union has to stop on a conflict and be committed by hand: git runs no pre-commit hook for
+  # a union it completes on its own, so that shape never reaches this gate and proves nothing.
+  good seed.sh; echo trunk > "$R/x.txt"; try
+  git -C "$R" checkout -q -b side
+  # no-verify-intended: staging the over-cap file is the fixture here, not the behaviour under
+  # test; the gate refusing a hand-authored one is proved by the rung above.
+  big carried.sh; echo side > "$R/x.txt"
+  git -C "$R" add -A; git -C "$R" commit -q --no-verify -m side
+  git -C "$R" checkout -q -
+  echo other > "$R/x.txt"; try
+  git -C "$R" merge --no-ff -m j side || true
+  echo settled > "$R/x.txt"; git -C "$R" add -A
+  run git -C "$R" commit -q -m j
+  [ "$status" -eq 0 ]
+}
+@test "a blob the union itself writes is still graded" {
+  good seed.sh; try
+  git -C "$R" checkout -q -b side
+  good c.sh; echo "echo side" >> "$R/c.sh"; try
+  git -C "$R" checkout -q -
+  good c.sh; echo "echo trunk" >> "$R/c.sh"; try
+  git -C "$R" merge --no-ff -m j side || true
+  good c.sh; sed -i "" "/^trap/d" "$R/c.sh"   # the resolution is a blob neither parent holds
+  git -C "$R" add -A
+  run git -C "$R" commit -q -m j
+  [ "$status" -ne 0 ]
+  [[ "$output" == *"no trap"* ]]
+}

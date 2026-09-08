@@ -34,10 +34,34 @@ is_fixture() {
 	case "$1" in tests/fixtures/* | */tests/fixtures/*) return 0 ;; esac
 	return 1
 }
+# A merge commit authors nothing it merely carries across. `git diff --cached` during a merge
+# compares the index against HEAD alone, so every file the OTHER side changed reads as staged --
+# including files this branch never touched. On 2026-09-08 that refused a routine `merge origin/main`
+# on bin/idp-pipeverdict being 102 lines, a file already on main whose staged blob was byte-identical
+# to it (f17e429d both sides). A guard that refuses correct work is an outage (LAW 38), so a file
+# whose staged blob matches ANY parent's is carried, not written, and is not graded here. Outside a
+# merge there is one parent and a staged file differs from it by definition, so ordinary commits are
+# graded exactly as before.
+parents() {
+	git rev-parse -q --verify HEAD 2>/dev/null
+	local g
+	g=$(git rev-parse --git-dir)
+	[ -f "$g/MERGE_HEAD" ] && cat "$g/MERGE_HEAD"
+	return 0
+}
+mapfile -t PARENTS < <(parents)
+carried() { # <path> -> 0 when the staged blob is one a parent already had
+	local f=$1 blob p
+	blob=$(git rev-parse ":$f" 2>/dev/null) || return 1
+	for p in "${PARENTS[@]}"; do
+		[ "$blob" = "$(git rev-parse "$p:$f" 2>/dev/null)" ] && return 0
+	done
+	return 1
+}
 mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z | tr '\0' '\n')
 mapfile -t added < <(git diff --cached --name-only --diff-filter=A -z | tr '\0' '\n')
 files=()
-for f in "${staged[@]}"; do [ -f "$f" ] && ! is_fixture "$f" && is_shell "$f" && files+=("$f"); done
+for f in "${staged[@]}"; do [ -f "$f" ] && ! is_fixture "$f" && ! carried "$f" && is_shell "$f" && files+=("$f"); done
 [ "${#files[@]}" -gt 0 ] || exit 0
 
 for tool in shellcheck shfmt; do

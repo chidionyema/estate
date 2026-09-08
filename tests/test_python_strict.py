@@ -70,10 +70,18 @@ def test_new_file_with_undefined_name_is_refused(repo: Path) -> None:
     assert "fails ruff check" in p.stderr and "REFUSED" in p.stderr
 
 
-def test_new_unformatted_file_is_refused(repo: Path) -> None:
+def test_new_unformatted_file_is_formatted_and_restaged(repo: Path) -> None:
+    """Layout is not a judgement call, so the gate fixes it rather than bouncing the commit.
+
+    This test asserted a refusal until 2026-09-08 and had been red since the gate stopped
+    refusing: refusing over whitespace cost a red CI run and a second push on idp#1399, so a
+    commit now formats and re-stages instead. The rows that are judgement -- undefined names,
+    security findings -- still refuse, and the tests above hold that line.
+    """
     p = commit(repo, "fmt.py", UNFORMATTED)
-    assert p.returncode != 0
-    assert "fails ruff format" in p.stderr
+    assert p.returncode == 0, p.stderr
+    committed = run(repo, "show", "HEAD:fmt.py").stdout
+    assert committed == "x = 1\ny = 2\n", committed
 
 
 def test_existing_off_standard_file_ratchets(repo: Path) -> None:
@@ -161,3 +169,51 @@ def test_range_mode_grades_commits_like_ci(repo: Path) -> None:
         text=True,
     )
     assert clean.returncode == 0
+
+
+def _union_carrying(repo: Path, name: str, body: str) -> subprocess.CompletedProcess:
+    """Build a conflicted union that carries `name` across unchanged, and commit it by hand.
+
+    The union has to stop on a conflict: git runs no pre-commit hook for one it completes on its
+    own, so the auto-committed shape never reaches this gate and would prove nothing.
+    """
+    (repo / "x.txt").write_text("trunk\n")
+    run(repo, "add", "-A")
+    run(repo, "commit", "-qm", "base")
+    run(repo, "checkout", "-qb", "side")
+    (repo / name).write_text(body)
+    (repo / "x.txt").write_text("side\n")
+    run(repo, "add", "-A")
+    # --no-verify: staging the off-standard file is the fixture, not the behaviour under test;
+    # the gate refusing a hand-authored one is proved by the tests above.
+    assert run(repo, "commit", "-q", "--no-verify", "-m", "side").returncode == 0
+    run(repo, "checkout", "-q", "-")
+    (repo / "x.txt").write_text("other\n")
+    run(repo, "add", "-A")
+    run(repo, "commit", "-qm", "trunk")
+    run(repo, "merge", "--no-ff", "-m", "j", "side")
+    (repo / "x.txt").write_text("settled\n")
+    run(repo, "add", "-A")
+    return run(repo, "commit", "-qm", "j")
+
+
+def test_a_union_that_only_carries_an_off_standard_file_is_not_graded(
+    repo: Path,
+) -> None:
+    """A union commit authors nothing it merely carries across (2026-09-08, LAW 38).
+
+    `git diff --cached` compares the index against HEAD alone, so during a union every file the
+    other side changed reads as newly staged. The shell twin of this gate refused a routine
+    catch-up from the trunk on exactly that reading.
+    """
+    assert _union_carrying(repo, "legacy.py", UNDEFINED).returncode == 0
+
+
+def test_a_blob_the_union_itself_writes_is_still_graded(repo: Path) -> None:
+    """The exemption stops at "carried": a resolution neither parent holds is this commit's own."""
+    _union_carrying(repo, "legacy.py", CLEAN)
+    (repo / "legacy.py").write_text(UNDEFINED)
+    run(repo, "add", "-A")
+    out = run(repo, "commit", "-qm", "j2")
+    assert out.returncode != 0
+    assert "fails ruff check" in (out.stdout + out.stderr)

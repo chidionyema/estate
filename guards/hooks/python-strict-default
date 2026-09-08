@@ -53,9 +53,48 @@ def diff(*flt: str) -> list[str]:
     return git(*args, "--name-only").split("\n")
 
 
+def parents() -> list[str]:
+    """The commits this one will have as parents: HEAD, plus MERGE_HEAD during a union."""
+    out = []
+    for args in (("rev-parse", "-q", "--verify", "HEAD"), ("rev-parse", "-q", "--verify", "MERGE_HEAD")):
+        try:
+            out.append(git(*args).strip())
+        except subprocess.CalledProcessError:
+            pass
+    return [c for c in out if c]
+
+
+def carried(path: str, heads: list[str]) -> bool:
+    """True when the staged blob is one a parent already held, so this commit authored nothing.
+
+    A union commit carries every file the other side changed, and `git diff --cached` compares the
+    index against HEAD alone -- so during a union every one of them reads as newly added. On
+    2026-09-08 the shell twin of this gate refused a routine catch-up from the trunk over a file
+    already on the trunk, byte-identical to it. A guard that refuses correct work is an outage
+    (LAW 38). Outside a union there is one parent and a staged file differs from it by definition,
+    so ordinary commits are selected exactly as before.
+    """
+    try:
+        blob = git("rev-parse", f":{path}").strip()
+    except subprocess.CalledProcessError:
+        return False
+    for h in heads:
+        try:
+            if git("rev-parse", f"{h}:{path}").strip() == blob:
+                return True
+        except subprocess.CalledProcessError:
+            continue
+    return False
+
+
 def staged_python() -> tuple[list[str], set[str]]:
     staged = [f for f in diff("--diff-filter=ACM") if f.endswith(".py")]
     added = set(diff("--diff-filter=A"))
+    if RANGE is None:  # a commit; in CI the range already names a base, and unions are not staged
+        heads = parents()
+        if len(heads) > 1:  # only a union can carry a blob a parent already held
+            staged = [f for f in staged if not carried(f, heads)]
+            added = {f for f in added if not carried(f, heads)}
     return [f for f in staged if os.path.isfile(f)], added
 
 
@@ -122,8 +161,23 @@ def main() -> int:
     # commit over it cost a red CI run and a second push on idp#1399. In a commit (no
     # PYTHON_STRICT_RANGE, so not the CI copy) the file is formatted and re-staged instead. The
     # other rows still refuse: undefined names and security findings are judgement, not layout.
+    # A file that was already off-standard at HEAD is exempt from the ratchet below, and it has to
+    # be exempt from the reformat too: rewriting a legacy file turns a one-line change into a
+    # whole-file diff that no reviewer can read, and it defeats every line-count ratchet built on
+    # top of it (claude-guards' policy/hand_rolled_policy.rego counts rule-guard.py's lines, and
+    # this reformat moved it from 1402 to 1797 on two branches on 2026-09-04). Format what is new
+    # or already clean; leave the legacy files to their retrofit ticket.
     if not os.environ.get("PYTHON_STRICT_RANGE"):
-        fixed = [f for f in files if not ruff_format(f)]
+        legacy = set()
+        for f in files:
+            if f in added or ruff_format(f):
+                continue
+            was = head_copy(f)
+            if was is not None:
+                if not ruff_format(was):
+                    legacy.add(f)
+                os.unlink(was)
+        fixed = [f for f in files if f not in legacy and not ruff_format(f)]
         if fixed:
             subprocess.run(["ruff", "format", "--quiet", "--", *fixed], check=False)
             subprocess.run(["git", "add", "--", *fixed], check=False)

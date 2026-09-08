@@ -36,9 +36,36 @@ SWEEP="$HOME/.claude/scripts/config-syntax-sweep.py"
 command -v python3 >/dev/null 2>&1 || exit 0
 [ -f "$SWEEP" ] || exit 0
 
+# A union commit carries every file the other side changed, and `git diff --cached` compares the
+# index against HEAD alone -- so during a union every one of them reads as newly staged. On
+# 2026-09-08 the shell twin of this gate refused a routine catch-up from the trunk over a file
+# already on the trunk, byte-identical to it. A guard that refuses correct work is an outage
+# (LAW 38), and a file a parent already held is not this commit's to parse. Outside a union there
+# is one parent and a staged file differs from it by definition, so ordinary commits are
+# graded exactly as before.
+parents() {
+	git rev-parse -q --verify HEAD 2>/dev/null
+	g=$(git rev-parse --git-dir)
+	[ -f "$g/MERGE_HEAD" ] && cat "$g/MERGE_HEAD"
+	return 0
+}
+mapfile -t PARENTS < <(parents)
+carried() { # <path> -> 0 when the staged blob is one a parent already had
+	local f=$1 blob p
+	blob=$(git rev-parse ":$f" 2>/dev/null) || return 1
+	for p in "${PARENTS[@]}"; do
+		[ "$blob" = "$(git rev-parse "$p:$f" 2>/dev/null)" ] && return 0
+	done
+	return 1
+}
+
 # Added, copied or modified files only. A deleted file has nothing to parse.
-mapfile -t staged < <(git diff --cached --name-only --diff-filter=ACM -z \
-  | tr '\0' '\n' | grep -Ei '\.(xml|ya?ml|json|jsonc|toml)$' || true)
+mapfile -t changed < <(git diff --cached --name-only --diff-filter=ACM -z |
+	tr '\0' '\n' | grep -Ei '\.(xml|ya?ml|json|jsonc|toml)$' || true)
+staged=()
+for f in "${changed[@]}"; do
+	[ -n "$f" ] && ! carried "$f" && staged+=("$f")
+done
 [ "${#staged[@]}" -gt 0 ] || exit 0
 
 out="$(python3 "$SWEEP" --files "${staged[@]}" 2>&1)"
