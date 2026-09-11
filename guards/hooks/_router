@@ -124,7 +124,19 @@ if [ "$name" = "pre-push" ]; then
 			run "$top/$d/pre-push" "$@"
 		fi
 	done
-	# No repository hook. Run the shared LAW 32 gate rather than refusing.
+	# Run law32-gate from the estate. Only the verifier branch fires on the idp repo
+	# (it has bin/idp-prepush-verify). The verifier itself is gate-only pending PR #3442.
+	# Falls back to the universal bash default for repos without the gate.
+	if [ -x "$HOME/.estate/bin/law32-gate" ]; then
+		set +e
+		lout="$(python3 "$HOME/.estate/bin/law32-gate" 2>&1)"
+		lrc=$?
+		set -e
+		printf '%s\n' "$lout"
+		if [ "$lrc" = 1 ]; then exit 1; fi
+	else
+		run "$(dirname "$0")/law32-default" "$@"
+	fi
 	#
 	# Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
 	# repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
@@ -136,13 +148,40 @@ if [ "$name" = "pre-push" ]; then
 	run "$(dirname "$0")/law32-default" "$@"
 fi
 
+# post-checkout stamps a branch with the session that created it, so the pre-commit guard below
+# knows what "not mine" means. Without this every branch would be unowned and the guard would have
+# nothing to compare against -- the incident (a commit landing on another session's branch) was
+# possible precisely because nothing recorded which branch belonged to whom.
+#
+# MEASURED, NOT ASSUMED. git invokes `post-checkout <prev-head> <new-head> <is-branch-checkout>`
+# and passes NO branch name. Two earlier versions of this block read a name out of $4 and stamped
+# nothing at all, silently, because a `git config` of an empty name succeeds. The name is read from
+# HEAD instead, which is the thing the hook was called about.
+#
+# It stamps ONLY when the checkout created the branch, and only if the branch does not already
+# carry an owner: `git checkout main` must not claim main, and checking out somebody else's branch
+# must not steal it.
+if [ "$name" = "post-checkout" ]; then
+	if [ "${3:-}" = "1" ] && [ -n "${PI_SESSION_ID:-}" ]; then
+		stamp="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+		if [ -n "$stamp" ] && [ "$stamp" != "main" ]; then
+			if ! git config --get "branch.$stamp.pi-session" >/dev/null 2>&1; then
+				git config "branch.$stamp.pi-session" "$PI_SESSION_ID" 2>/dev/null || true
+			fi
+		fi
+	fi
+fi
+
 # pre-commit gets a shared default too, for the same reason pre-push does: a gate
 # each repository must remember to install is a gate most repositories do not have.
 # It refuses a commit that stages a config file the service reading it cannot parse
 # (LAW 45, 2026-08-24). It fails open on a missing python3 or a missing checker.
 if [ "$name" = "pre-commit" ]; then
-	# Three defaults, all must pass: config syntax, the shell standard, the Python standard (crew#620).
-	for shared in "$(dirname "$0")/config-syntax-default" "$(dirname "$0")/shell-strict-default" "$(dirname "$0")/python-strict-default"; do
+	# All four defaults must pass (crew#620, then the 2026-09-11 branch incident).
+	# Four defaults, all must pass: config syntax, the shell standard, the Python standard, and
+	# branch ownership (crew incident 2026-09-11 -- a commit landed on another session's branch
+	# because the checkout happened to be sitting on it, and only a rejected push revealed it).
+	for shared in "$(dirname "$0")/branch-ownership-default" "$(dirname "$0")/config-syntax-default" "$(dirname "$0")/shell-strict-default" "$(dirname "$0")/python-strict-default"; do
 		if [ -x "$shared" ]; then
 			set +e
 			"$shared" "$@"

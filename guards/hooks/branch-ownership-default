@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# A commit onto somebody else's branch, caught before it is made.
+#
+# THE INCIDENT (2026-09-11). A concierge commit was made from ~/dev/code/idp while that checkout
+# happened to be sitting on another session's branch, `fix/convergence-proof-cases-exercise-the-rule`,
+# which had never been pushed. The commit landed there, a merge of main followed it onto the same
+# branch, and neither reached main. Nobody lost work this time -- the branch was found, reset, and
+# the commit re-landed -- but only because the push was rejected and the rejection was read.
+#
+# It is not a mistake a person makes twice in a safe way. A worktree sitting on a colleague's branch
+# is exactly where a long-running session ends up, because switching branches is how you look at
+# something else, and a commit made in the next minute does not announce which tree it is in.
+#
+# WHAT IS REFUSED. A commit whose HEAD branch is not `main` and is not one this session created.
+# Ownership is read from the branch's own config, `branch.<name>.pi-session`, written when a branch
+# is started with `git checkout -b` under this session. A branch that carries no owner, or carries
+# somebody else's, is refused with the two commands that fix it.
+#
+# WHAT IS NOT REFUSED, because a guard that refuses correct work is an outage (R38):
+#   * a commit on main;
+#   * a commit on a branch this session started;
+#   * a commit on a branch whose owner is unrecorded AND which exists only locally -- that is the
+#     ordinary "I made a branch before this guard existed" case, and refusing it would strand every
+#     branch in the estate. It warns instead, loudly, naming the branch.
+#   * a commit on a branch that is ahead of every remote and has no upstream: nobody else can be
+#     depending on something that has never left this machine.
+#
+# Escape hatch, for the one legitimate case (deliberately continuing somebody's branch):
+#   PI_ALLOW_FOREIGN_BRANCH=1 git commit ...
+#
+# Fails open on a missing git or an unreadable ref: a machine that cannot run git cannot make a
+# commit either, so there is nothing to protect.
+set -uo pipefail
+
+[ "${PI_ALLOW_FOREIGN_BRANCH:-}" = "1" ] && exit 0
+
+command -v git >/dev/null 2>&1 || exit 0
+git rev-parse --git-dir >/dev/null 2>&1 || exit 0
+
+branch="$(git symbolic-ref --quiet --short HEAD 2>/dev/null || true)"
+# Detached HEAD is a rebase or a bisect in progress, not a place to refuse a commit.
+[ -n "$branch" ] || exit 0
+[ "$branch" = "main" ] && exit 0
+
+owner="$(git config --get "branch.$branch.pi-session" 2>/dev/null || true)"
+me="${PI_SESSION_ID:-}"
+
+# Somebody else's branch, by name. This is the incident.
+if [ -n "$owner" ] && [ -n "$me" ] && [ "$owner" != "$me" ]; then
+	printf '\nREFUSED  you are committing onto a branch another session owns.\n\n' >&2
+	printf '  branch : %s\n' "$branch" >&2
+	printf '  owner  : %s\n' "$owner" >&2
+	printf '  yours  : %s\n\n' "$me" >&2
+	printf '  Move your work to your own branch:\n' >&2
+	printf '      git stash && git checkout main && git checkout -b <your-branch>\n' >&2
+	printf '      git stash pop\n\n' >&2
+	printf '  Or, if you are deliberately continuing theirs:\n' >&2
+	printf '      PI_ALLOW_FOREIGN_BRANCH=1 git commit ...\n\n' >&2
+	exit 1
+fi
+
+# Nobody recorded an owner. Refuse only when another machine could be depending on this branch --
+# it is on a remote, or it has never existed locally alone. A purely local, unpushed branch is
+# where every branch starts, and refusing there would break ordinary work.
+if [ -z "$owner" ]; then
+	if git config --get "branch.$branch.remote" >/dev/null 2>&1; then
+		printf '\nREFUSED  %s tracks a remote and carries no owner.\n\n' "$branch" >&2
+		printf '  A branch somebody else may be working from, committed onto without checking, is how\n' >&2
+		printf '  another session loses work. Claim it, or move to your own branch:\n\n' >&2
+		printf '      git config branch.%s.pi-session "%s"   # claim it\n' "$branch" "${me:-<session>}" >&2
+		printf '      git checkout main && git checkout -b <your-branch>   # or move\n\n' >&2
+		exit 1
+	fi
+	printf 'note     committing to unpushed branch %s, which records no owner\n' "$branch" >&2
+fi
+
+exit 0
