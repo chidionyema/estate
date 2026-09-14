@@ -124,19 +124,24 @@ if [ "$name" = "pre-push" ]; then
 			run "$top/$d/pre-push" "$@"
 		fi
 	done
-	# Run law32-gate from the estate. Only the verifier branch fires on the idp repo
-	# (it has bin/idp-prepush-verify). The verifier itself is gate-only pending PR #3442.
-	# Falls back to the universal bash default for repos without the gate.
-	if [ -x "$HOME/.estate/bin/law32-gate" ]; then
-		set +e
-		lout="$(python3 "$HOME/.estate/bin/law32-gate" 2>&1)"
-		lrc=$?
-		set -e
-		printf '%s\n' "$lout"
-		if [ "$lrc" = 1 ]; then exit 1; fi
-	else
+	# Run law32-gate from the estate. Fires on the idp repo (every clone) but
+	# skips estate itself (it has no LAW 32 obligation). Verifier gate is PR #3442.
+	# Falls back to the universal bash default for other repos without the gate.
+	case "$(git rev-parse --show-toplevel 2>/dev/null)" in
+	*/idp)
+		if [ -x "$HOME/.estate/bin/law32-gate" ]; then
+			set +e
+			lout="$(python3 "$HOME/.estate/bin/law32-gate" 2>&1)"
+			lrc=$?
+			set -e
+			printf '%s\n' "$lout"
+			if [ "$lrc" = 1 ]; then exit 1; fi
+		fi
+		;;
+	*)
 		run "$(dirname "$0")/law32-default" "$@"
-	fi
+		;;
+	esac
 	#
 	# Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
 	# repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
