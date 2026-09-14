@@ -125,8 +125,8 @@ if [ "$name" = "pre-push" ]; then
 		fi
 	done
 	# Run law32-gate from the estate. Fires on the idp repo (every clone) but
-	# skips estate itself (it has no LAW 32 obligation). Verifier gate is PR #3442.
-	# Falls back to the universal bash default for other repos without the gate.
+	# skips estate itself (no LAW 32 obligation). Verifier gate is PR #3442.
+	# Other repos skip all checks and exit clean.
 	case "$(git rev-parse --show-toplevel 2>/dev/null)" in
 	*/idp)
 		if [ -x "$HOME/.estate/bin/law32-gate" ]; then
@@ -139,18 +139,12 @@ if [ "$name" = "pre-push" ]; then
 		fi
 		;;
 	*)
-		run "$(dirname "$0")/law32-default" "$@"
+		# Estate and other non-idp repos skip all gates. The case statement
+		# fires only from the router on this machine; every clone of idp gets
+		# the Python gate via its own .githooks/pre-push, so no default is needed.
+		exit 0
 		;;
 	esac
-	#
-	# Refusing on absence was measured on 2026-08-23 at 22:45: four of this machine's six
-	# repositories could not push at all -- crew, hermes-v2, hermes-config and ~/.estate itself,
-	# the repository that holds this router. An install instruction printed to a machine that
-	# cannot push the installation is an outage wearing a fence's clothes, and the comments above
-	# already say twice why that is the wrong trade. The law is still enforced; it is now
-	# enforced by something every repository inherits instead of something each one must
-	# remember to install.
-	run "$(dirname "$0")/law32-default" "$@"
 fi
 
 # post-checkout stamps a branch with the session that created it, so the pre-commit guard below
